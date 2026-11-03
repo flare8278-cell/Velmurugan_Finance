@@ -1,16 +1,16 @@
 # GitHub and Supabase connection status
 
-Prepared 3 November 2026. Neither a remote push nor a cloud database deployment has happened yet.
+Updated 3 November 2026. Application source was uploaded to GitHub main (15abfb8), and the core database schema is now deployed to the connected Supabase finance project.
 
 ## GitHub
 
-Target: https://github.com/flare8278-cell/Velmurugan_Finance. The supplied repository is currently public. Its initial README and ignore file have been merged locally, preserving its initial commit. GitHub application access currently provides read but not push permission, and the local credential manager has no usable GitHub login. Enable this repository in the GitHub connection or authenticate Git locally before pushing. No force push is needed.
+Target: https://github.com/flare8278-cell/Velmurugan_Finance. The GitHub connection now has confirmed write access under flare8278-cell. Application source was uploaded to main while preserving the starter commit. The repository is currently public; no secret keys or borrower data were uploaded.
 
 The local project can be committed independently of the connection. Credentials must never enter commits, Git remote URLs or configuration examples. Source spreadsheets, backup files, local environment files and Supabase CLI link metadata are excluded from Git.
 
 ## Supabase
 
-Connect the Supabase plugin when offered in the chat. Then identify the finance project by URL or project reference. Before applying migrations, inspect the project's existing schemas and migration history. Prefer a new development project for this foundation. Existing financial data requires a backup and reviewed migration plan.
+Supabase is connected: project `querjeebfguwnhhgpwxm`, URL https://querjeebfguwnhhgpwxm.supabase.co, name Velmurugan Finance, region eu-west-1. The project was inspected and had no application tables or migration history before deployment. Core schema and access-index migrations were applied and verified. No paid project or branch was created.
 
 The plugin connection enables database management without pasting secret keys in chat. A project URL and publishable key are public application configuration; database passwords, service-role keys and personal access tokens are not.
 
