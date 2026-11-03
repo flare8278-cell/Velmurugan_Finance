@@ -1,0 +1,12 @@
+{
+  "name": "velmurugan-finance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-pages.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
