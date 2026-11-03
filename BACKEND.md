@@ -1,6 +1,12 @@
 # Backend foundation
 
-Implemented locally, not deployed or connected to the demo interface yet.
+Core schema deployed to Supabase project `querjeebfguwnhhgpwxm` (Velmurugan Finance), 3 November 2026. The demo interface is not yet integrated with live authentication or financial records.
+
+Cloud verification passed: public Auth endpoint reachable with publishable key; all eight public finance tables have RLS enabled; anonymous SELECT and authenticated direct INSERT are denied. A transaction-wrapped cloud test created a temporary owner/client/loan, verified a ₹5,000 charge and a ₹7,000 interest-first receipt reducing principal to ₹98,000, and rolled all fixtures back. An unverified caller was denied owner operations.
+
+Security advisor flags the four authenticated SECURITY DEFINER RPCs. They are intentional privileged entrypoints with fixed search_path and explicit owner/client scope checks, and anonymous execution is revoked. This is an acknowledged review item, not a claim of a warning-free security audit. See https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable. Performance follow-up adds missing foreign-key indexes and wraps the profile auth lookup in a scalar SELECT. Remaining unused-index INFO notices are expected in an empty database.
+
+Migration history was created by Supabase MCP: cloud version 20261103044201 maps to local 202611030001_finance_core.sql. Consult the cloud migration list before future CLI pushes; reconcile this legacy local timestamp before treating CLI migration history as authoritative. No real borrower records or passwords were imported.
 
 ## Database migration
 
