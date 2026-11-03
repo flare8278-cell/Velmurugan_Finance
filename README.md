@@ -25,4 +25,4 @@ Use a private owner-controlled repository. Do not commit credentials, customer r
 
 ## Repository description
 
-An FinTech Application 
+An FinTech Application

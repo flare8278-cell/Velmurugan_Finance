@@ -4,7 +4,7 @@ Prepared 3 November 2026. Neither a remote push nor a cloud database deployment 
 
 ## GitHub
 
-The connected GitHub application currently exposes only an unrelated hospital repository. Provide the finance repository URL and enable access to that private repository in the GitHub connection. We must inspect its existing contents/default branch before pushing, preserving any existing history. Do not force-push or overwrite unrelated work.
+Target: https://github.com/flare8278-cell/Velmurugan_Finance. The supplied repository is currently public. Its initial README and ignore file have been merged locally, preserving its initial commit. GitHub application access currently provides read but not push permission, and the local credential manager has no usable GitHub login. Enable this repository in the GitHub connection or authenticate Git locally before pushing. No force push is needed.
 
 The local project can be committed independently of the connection. Credentials must never enter commits, Git remote URLs or configuration examples. Source spreadsheets, backup files, local environment files and Supabase CLI link metadata are excluded from Git.
 
