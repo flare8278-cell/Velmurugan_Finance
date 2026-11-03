@@ -22,3 +22,7 @@ Use a private owner-controlled repository. Do not commit credentials, customer r
 4. Implement authoritative loan ledger and idempotent receipts.
 5. Implement private questions, reviewed vault and tested backups.
 6. Connect owner-controlled services, reconcile imports and pilot.
+
+## Repository description
+
+An FinTech Application 
