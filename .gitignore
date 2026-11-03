@@ -147,3 +147,27 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Finance application data and secrets
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+backups/
+imports/
+*.xlsx
+*.xls
+*.csv
+*.dump
+*.backup
+*.sql.gz
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+supabase/.temp/
+supabase/.branches/
+__pycache__/
+*.pyc
