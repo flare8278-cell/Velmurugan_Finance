@@ -171,6 +171,7 @@ export default function App() {
       profileRef.current = null;
       resetPrivate();
       setProfileError(errorMessage(e));
+      setInitial(false);
     } finally {
       if (epoch === authEpoch.current) {
         setInitial(false);
@@ -198,6 +199,7 @@ export default function App() {
         setProfile(null);
         profileRef.current = null;
         setSessionPresent(false);
+        setInitial(false);
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         setSessionPresent(true);
         // Defer async work to avoid blocking Supabase's auth event dispatcher
