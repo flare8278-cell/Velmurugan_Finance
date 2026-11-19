@@ -1,6 +1,6 @@
 \set ON_ERROR_STOP on
 begin;
-insert into auth.users values
+insert into auth.users(id) values
  ('00000000-0000-0000-0000-000000000001'),
  ('00000000-0000-0000-0000-000000000002'),
  ('00000000-0000-0000-0000-000000000003');
@@ -8,6 +8,7 @@ insert into public.finance_profiles values
  ('00000000-0000-0000-0000-000000000001','owner',true),
  ('00000000-0000-0000-0000-000000000002','client',true),
  ('00000000-0000-0000-0000-000000000003','client',true);
+insert into auth.sessions(id,user_id) values ('00000000-0000-0000-0000-000000000010','00000000-0000-0000-0000-000000000001'),('00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000002');
 select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000001","session_id":"00000000-0000-0000-0000-000000000010"}',false);
 set local role authenticated;
 do $$ begin
@@ -54,7 +55,7 @@ end $$;
 reset role;
 update public.finance_clients set auth_user_id='00000000-0000-0000-0000-000000000002' where id=:'client_one';
 update public.finance_clients set auth_user_id='00000000-0000-0000-0000-000000000003' where id=:'client_two';
-select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000002"}',false);
+select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000002","session_id":"00000000-0000-0000-0000-000000000011"}',false);
 set local role authenticated;
 do $$ declare n int; begin
  select count(*) into n from public.finance_clients;

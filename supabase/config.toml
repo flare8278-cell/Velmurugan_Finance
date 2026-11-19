@@ -1,0 +1,6 @@
+project_id = "velmurugan-finance"
+
+[functions.finance-api]
+verify_jwt = false
+# The function verifies caller identity via Auth getUser and a live DB session check.
+# Public login endpoints require access before a user has a JWT.
