@@ -222,7 +222,12 @@ button:disabled {
   overflow: hidden;
   cursor: grab;
   touch-action: none;
-  background: #03080e;
+  display: grid;
+  place-items: center;
+  container-type: size;
+  background:
+    url('./assets/login-starfield.png') center / 700px 700px repeat,
+    radial-gradient(ellipse at 70% 45%, #18283a 0%, #0a1522 55%, #050b13 100%);
   z-index: 1;
 }
 
@@ -231,13 +236,16 @@ button:disabled {
 }
 
 .login-earth-video {
-  width: 100%;
-  height: 100%;
+  /* Size the element to the actual frame so the fade follows its edges. */
+  width: min(100cqw, 157cqh);
+  height: auto;
+  aspect-ratio: 212 / 135;
   object-fit: contain;
   object-position: center;
   display: block;
   pointer-events: none;
   user-select: none;
+  mask-image: linear-gradient(to bottom, transparent, #000 9%, #000 91%, transparent);
 }
 
 .globe-fallback-image {
