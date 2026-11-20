@@ -45,8 +45,11 @@ with tempfile.TemporaryDirectory(prefix='velmurugan-finance-test-') as temp:
         run([tool('pg_ctl'), '-D', str(cluster), '-l', str(log), '-o', f'-h 127.0.0.1 -p {port}', '-w', 'start'])
         started = True
         base = [tool('psql'), '-X', '-h', '127.0.0.1', '-p', str(port), '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1']
-        for file in ['supabase/tests/bootstrap_local.sql', 'supabase/migrations/202611030001_finance_core.sql', 'supabase/tests/finance_core.sql']:
-            run(base + ['-f', str(ROOT / file)])
+        run(base + ['-f', str(ROOT / 'supabase/tests/bootstrap_local.sql')])
+        for file in sorted((ROOT/'supabase/migrations').glob('*.sql')):
+            run(base + ['-f', str(file)])
+        for file in sorted((ROOT/'supabase/tests').glob('finance_*.sql')):
+            run(base + ['-f', str(file)])
         print('PASS: migration, calculations, idempotency, permission and date tests')
 
         owner = '00000000-0000-0000-0000-000000000001'
@@ -55,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix='velmurugan-finance-test-') as temp:
         client = '00000000-0000-0000-0000-000000000030'
         loan = '00000000-0000-0000-0000-000000000040'
         setup = f"""
-        insert into auth.users values ('{owner}');
+        insert into auth.users(id) values ('{owner}');
+        insert into auth.sessions(id,user_id) values ('{session}','{owner}');
         insert into public.finance_profiles values ('{owner}','owner',true);
         insert into finance_private.owner_verifications values ('{owner}','{session}',now()+interval '1 hour');
         insert into public.finance_clients(id,customer_code,name) values ('{client}','RACE001','Concurrency Test');
