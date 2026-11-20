@@ -1,4 +1,4 @@
-import {lazy, Suspense, useState} from 'react';
+import {lazy, Suspense, useEffect, useState} from 'react';
 import {api, configured, signIn} from './api';
 import {ArrowRightIcon} from './icons';
 import type {Profile} from './types';
@@ -13,7 +13,13 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
   return (
     <main className="login-page">
       <section className="login-story">
-        <Suspense fallback={<div className="globe-fallback" />}>
+        <Suspense
+          fallback={
+            <div className="interactive-globe-container globe-fallback" aria-hidden="true" style={{pointerEvents: 'none'}}>
+              <img className="login-earth-video" src="/earth-rotating-poster.jpg" alt="" />
+            </div>
+          }
+        >
           <Globe />
         </Suspense>
         <div className="login-story-content">
@@ -35,10 +41,11 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
           <span className="mini-mark">V</span>
           <h2>Welcome back.</h2>
           <p className="muted">Sign in to your finance workspace.</p>
-          <div className="segments" aria-label="Account type">
+          <div className="segments" aria-label="Account type" role="group">
             <button
               type="button"
               className={kind === 'owner' ? 'active' : ''}
+              aria-pressed={kind === 'owner'}
               onClick={() => {
                 setKind('owner');
                 setError('');
@@ -49,6 +56,7 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
             <button
               type="button"
               className={kind === 'client' ? 'active' : ''}
+              aria-pressed={kind === 'client'}
               onClick={() => {
                 setKind('client');
                 setError('');
@@ -131,6 +139,15 @@ export function VerifyEmail({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setInterval(() => {
+      setCooldown(prev => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
 
   return (
     <main className="center-page">
@@ -144,7 +161,7 @@ export function VerifyEmail({
         </p>
         <button
           className="button secondary full"
-          disabled={busy}
+          disabled={busy || cooldown > 0}
           onClick={async () => {
             setBusy(true);
             setError('');
@@ -152,6 +169,7 @@ export function VerifyEmail({
               const r = (await api('send-code')) as {challenge_id: string};
               setChallenge(r.challenge_id);
               setSent(true);
+              setCooldown(60);
             } catch (e) {
               setError((e as Error).message);
             } finally {
@@ -159,7 +177,13 @@ export function VerifyEmail({
             }
           }}
         >
-          {busy ? 'Please wait…' : sent ? 'Send a new code' : 'Send verification code'}
+          {busy
+            ? 'Please wait…'
+            : cooldown > 0
+            ? `Resend code in ${cooldown}s`
+            : sent
+            ? 'Send a new code'
+            : 'Send verification code'}
         </button>
         {sent && (
           <form
