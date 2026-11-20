@@ -1,26 +1,26 @@
 /* Paty palette adapted to the finance workspace. */
 html:root {
   color-scheme: dark;
-  --bg: #03080e;
-  --surface: #070e17;
-  --topbar: #070e17;
-  --navy: #070e17;
-  --navy-deep: #03080e;
-  --navy-surface: #0f1d2e;
+  --bg: #040910;
+  --surface: #0a1420;
+  --topbar: #0a1420;
+  --navy: #0a1420;
+  --navy-deep: #040910;
+  --navy-surface: #102238;
   --navy-border: #23405a;
   --line: #20384b;
   --line-light: #142539;
   --text: #f0f6fc;
   --text-muted: #94a3b8;
-  --teal: #0ea5e9;
+  --teal: #56b9ef;
   --teal-hover: #38bdf8;
   --teal-dark: #0b2335;
   --teal-light: #122e43;
-  --teal-soft: #0f1d2e;
-  --teal-text: #7dd3fc;
+  --teal-soft: #102238;
+  --teal-text: #9dd9ff;
   --gold-light: #372d1e;
   --gold-warm: #251d13;
-  --gold-text: #f0cc87;
+  --gold-text: #f4cb88;
   --danger: #fda4af;
 }
 .login-side, .login-card, .segments .active, .button.secondary,
@@ -51,12 +51,12 @@ html:root {
 .login-card label, .login-card .fine, .login-card .muted { font-size: 14px; }
 :focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
 /* Keep secondary text readable against the dark dashboard surfaces. */
-html:root { --text-muted: #a9b9cb; }
-.topbar { background: #070e17; color: var(--text); }
+html:root { --text-muted: #b4c5d8; }
+.topbar { background: #0a1420; color: var(--text); }
 .welcome-banner h2 em, .welcome-banner > span, .sidebar-note strong {
-  color: #f0cc87;
+  color: #f4cb88;
 }
 .stat p, .stat small, .steps p, .sync-line, .sync-line small {
   color: var(--text-muted);
 }
-.stat-arrow { color: #7dd3fc; }
+.stat-arrow { color: #9dd9ff; }
