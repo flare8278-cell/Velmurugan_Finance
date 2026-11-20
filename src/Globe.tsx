@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState, type ReactElement} from 'react';
 import * as THREE from 'three';
+import earthTextureUrl from './assets/earth-natural-paty.png';
 
 interface GlobeProps {
   motionAllowed?: boolean;
@@ -15,38 +16,22 @@ function latLongToVector3(lat: number, lon: number, radius: number): THREE.Vecto
   return new THREE.Vector3(x, y, z);
 }
 
-// Procedural landmass test based on broad continent bounding approximations
-function isLand(lat: number, lon: number): boolean {
-  // India & South Asia
-  if (lat >= 5 && lat <= 36 && lon >= 68 && lon <= 92) return true;
-  // East Asia
-  if (lat >= 18 && lat <= 50 && lon >= 95 && lon <= 135) return true;
-  // Southeast Asia & Indonesia
-  if (lat >= -10 && lat <= 20 && lon >= 95 && lon <= 150) return true;
-  // Europe
-  if (lat >= 35 && lat <= 68 && lon >= -10 && lon <= 45) return true;
-  // Middle East
-  if (lat >= 12 && lat <= 40 && lon >= 35 && lon <= 65) return true;
-  // Africa
-  if (lat >= -35 && lat <= 35 && lon >= -18 && lon <= 50) return true;
-  // North America
-  if (lat >= 15 && lat <= 70 && lon >= -165 && lon <= -55) return true;
-  // South America
-  if (lat >= -55 && lat <= 12 && lon >= -82 && lon <= -35) return true;
-  // Australia & New Zealand
-  if (lat >= -45 && lat <= -10 && lon >= 112 && lon <= 178) return true;
-  return false;
-}
-
 export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [webGlSupported, setWebGlSupported] = useState(true);
-  const [isPlaying, setIsPlaying] = useState(motionAllowed);
+
+  // Check OS reduced-motion preference
+  const prefersReduced =
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const initialMotion = motionAllowed && !prefersReduced;
+
+  const [isPlaying, setIsPlaying] = useState(initialMotion);
 
   // References for live 3D interaction inside the render loop
-  const autoRotateRef = useRef(true);
+  const autoRotateRef = useRef(initialMotion);
   const isDraggingRef = useRef(false);
   const previousPointerPositionRef = useRef({x: 0, y: 0});
   const rotationVelocityRef = useRef({x: 0, y: 0});
@@ -54,10 +39,12 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const pinchStartDistRef = useRef<number | null>(null);
 
-  // Ensure automatic rotation is active on load
+  // Synchronize rotation with motionAllowed and OS reduced-motion settings
   useEffect(() => {
-    autoRotateRef.current = motionAllowed;
-  }, [motionAllowed]);
+    const active = motionAllowed && !prefersReduced;
+    autoRotateRef.current = active;
+    setIsPlaying(active);
+  }, [motionAllowed, prefersReduced]);
 
   // Initialize Three.js WebGL scene
   useEffect(() => {
@@ -97,67 +84,32 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
 
     const GLOBE_RADIUS = 72;
 
-    // 1. Deep translucent core sphere with rich dark cyber-fintech tone (Paty #070e17)
-    const coreGeo = new THREE.SphereGeometry(GLOBE_RADIUS - 0.5, 48, 48);
-    const coreMat = new THREE.MeshBasicMaterial({
-      color: 0x070e17,
-      transparent: true,
-      opacity: 0.94
+    // 1. Natural Earth 3D Sphere with bundled equirectangular texture in Paty palette
+    const textureLoader = new THREE.TextureLoader();
+    const earthTexture = textureLoader.load(earthTextureUrl, () => {
+      renderer.render(scene, camera);
     });
-    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-    globeGroup.add(coreMesh);
+    earthTexture.colorSpace = THREE.SRGBColorSpace;
 
-    // 2. Subtle latitude / longitude grid lines with cyber-cyan tone
-    const gridGeo = new THREE.WireframeGeometry(new THREE.SphereGeometry(GLOBE_RADIUS, 18, 18));
-    const gridMat = new THREE.LineBasicMaterial({
-      color: 0x0f1d2e,
-      transparent: true,
-      opacity: 0.45
+    const earthGeo = new THREE.SphereGeometry(GLOBE_RADIUS, 64, 64);
+    const earthMat = new THREE.MeshBasicMaterial({
+      map: earthTexture,
+      color: 0xffffff
     });
-    const gridMesh = new THREE.LineSegments(gridGeo, gridMat);
-    globeGroup.add(gridMesh);
+    const earthMesh = new THREE.Mesh(earthGeo, earthMat);
+    globeGroup.add(earthMesh);
 
-    // 3. Procedural continent dot matrix (Fibonacci sphere sampling with land test)
-    const dotCount = 3800;
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const colorOcean = new THREE.Color(0x0a1420);
-    const colorLand = new THREE.Color(0x0ea5e9); // Paty Electric Cyan
-    const colorGold = new THREE.Color(0xe3bd70); // Paty Gold Accent
-
-    for (let i = 0; i < dotCount; i++) {
-      const phi = Math.acos(1 - (2 * (i + 0.5)) / dotCount);
-      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-
-      const lat = 90 - (phi * 180) / Math.PI;
-      const lon = ((theta * 180) / Math.PI) % 360 - 180;
-
-      const land = isLand(lat, lon);
-      if (!land && Math.random() > 0.12) continue;
-
-      const pt = latLongToVector3(lat, lon, GLOBE_RADIUS);
-      positions.push(pt.x, pt.y, pt.z);
-
-      const isSouthIndia = lat >= 8 && lat <= 15 && lon >= 76 && lon <= 81;
-      const c = isSouthIndia ? colorGold : land ? colorLand : colorOcean;
-      colors.push(c.r, c.g, c.b);
-    }
-
-    const dotsGeo = new THREE.BufferGeometry();
-    dotsGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    dotsGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    const dotsMat = new THREE.PointsMaterial({
-      size: 2.7,
-      vertexColors: true,
+    // 2. Subtle atmospheric rim glow mesh slightly above globe surface
+    const rimGeo = new THREE.SphereGeometry(GLOBE_RADIUS + 0.4, 48, 48);
+    const rimMat = new THREE.MeshBasicMaterial({
+      color: 0x0ea5e9,
       transparent: true,
-      opacity: 0.95,
-      sizeAttenuation: true
+      opacity: 0.08
     });
-    const dotsMesh = new THREE.Points(dotsGeo, dotsMat);
-    globeGroup.add(dotsMesh);
+    const rimMesh = new THREE.Mesh(rimGeo, rimMat);
+    globeGroup.add(rimMesh);
 
-    // 4. Financial Network Connection Arcs
+    // 3. Financial Network Connection Arcs & Hubs
     const hubs = [
       {name: 'Velmurugan Hub', lat: 11.6643, lon: 78.146},
       {name: 'Chennai', lat: 13.0827, lon: 80.2707},
@@ -173,6 +125,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
     const centerHub = hubs[0];
     const centerVec = latLongToVector3(centerHub.lat, centerHub.lon, GLOBE_RADIUS);
 
+    // Center Hub Marker: Pulsing Gold Ring & Dot
     const markerGeo = new THREE.RingGeometry(1.5, 3.4, 32);
     const markerMat = new THREE.MeshBasicMaterial({
       color: 0xe3bd70,
@@ -191,11 +144,26 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
     hubDotMesh.position.copy(centerVec);
     globeGroup.add(hubDotMesh);
 
+    // Secondary Hub Markers (Cyan/Gold Pins on Natural Earth Cities)
+    const secondaryHubGeo = new THREE.SphereGeometry(1.0, 12, 12);
+    const secondaryHubMat = new THREE.MeshBasicMaterial({
+      color: 0x7dd3fc,
+      transparent: true,
+      opacity: 0.9
+    });
+    const secondaryHubMeshes: THREE.Mesh[] = [];
+
     const arcMaterials: THREE.LineBasicMaterial[] = [];
     const arcs: THREE.Line[] = [];
 
     for (let h = 1; h < hubs.length; h++) {
       const targetVec = latLongToVector3(hubs[h].lat, hubs[h].lon, GLOBE_RADIUS);
+
+      const secMesh = new THREE.Mesh(secondaryHubGeo, secondaryHubMat);
+      secMesh.position.copy(targetVec);
+      globeGroup.add(secMesh);
+      secondaryHubMeshes.push(secMesh);
+
       const midVec = new THREE.Vector3().addVectors(centerVec, targetVec).multiplyScalar(0.5);
       const dist = centerVec.distanceTo(targetVec);
       const elevation = GLOBE_RADIUS + dist * 0.28;
@@ -216,7 +184,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
       globeGroup.add(arcLine);
     }
 
-    // 5. Outer Atmospheric Glow Ring
+    // 4. Outer Atmospheric Glow Ring
     const haloGeo = new THREE.RingGeometry(GLOBE_RADIUS + 0.5, GLOBE_RADIUS + 15, 64);
     const haloMat = new THREE.MeshBasicMaterial({
       color: 0x0ea5e9,
@@ -228,7 +196,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
     haloMesh.rotation.x = Math.PI / 2;
     globeGroup.add(haloMesh);
 
-    // 6. Floating Ambient Dust Particles in Background
+    // 5. Floating Ambient Dust Particles in Background
     const dustCount = 180;
     const dustPositions = new Float32Array(dustCount * 3);
     for (let i = 0; i < dustCount * 3; i += 3) {
@@ -247,7 +215,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
     const dustParticles = new THREE.Points(dustGeo, dustMat);
     scene.add(dustParticles);
 
-    // Non-passive wheel event listener
+    // Non-passive wheel event listener for smooth zoom
     const onCanvasWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (!cameraRef.current) return;
@@ -256,6 +224,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
       cameraRef.current.position.z = newZ;
     };
 
+    // Pinch-to-zoom touch support
     const onCanvasTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -286,7 +255,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
     canvas.addEventListener('touchmove', onCanvasTouchMove, {passive: true});
     canvas.addEventListener('touchend', onCanvasTouchEnd, {passive: true});
 
-    // Animation & Render Loop with automatic smooth rotation
+    // Animation & Render Loop with automatic smooth rotation & pulse
     let animId = 0;
     let pulseTime = 0;
 
@@ -341,12 +310,13 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
       canvas.removeEventListener('touchmove', onCanvasTouchMove);
       canvas.removeEventListener('touchend', onCanvasTouchEnd);
 
-      coreGeo.dispose();
-      coreMat.dispose();
-      gridGeo.dispose();
-      gridMat.dispose();
-      dotsGeo.dispose();
-      dotsMat.dispose();
+      earthGeo.dispose();
+      earthMat.dispose();
+      earthTexture.dispose();
+      rimGeo.dispose();
+      rimMat.dispose();
+      secondaryHubGeo.dispose();
+      secondaryHubMat.dispose();
       markerGeo.dispose();
       markerMat.dispose();
       hubDotGeo.dispose();
@@ -493,7 +463,7 @@ export function Globe({motionAllowed = true}: GlobeProps): ReactElement {
               className="globe-tool-btn"
               onClick={() => {
                 if (globeGroupRef.current && cameraRef.current) {
-                  globeGroupRef.current.rotation.set(0, 0, 0);
+                  globeGroupRef.current.rotation.set(0.25, -1.35, 0);
                   cameraRef.current.position.z = 270;
                 }
               }}

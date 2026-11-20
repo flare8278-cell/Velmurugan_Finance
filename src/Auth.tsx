@@ -28,7 +28,6 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
             </h1>
             <p>Secure records for your business. Clear balances for the people who trust you.</p>
           </div>
-          <small>Private access · Encrypted connections · Your records in view</small>
         </div>
       </section>
       <section className="login-side">
