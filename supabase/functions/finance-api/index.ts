@@ -4,7 +4,6 @@ const url=Deno.env.get('SUPABASE_URL')!;
 const serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const anonKey=Deno.env.get('SUPABASE_ANON_KEY')!;
 const admin=createClient(url,serviceKey,{auth:{persistSession:false,autoRefreshToken:false}});
-const ownerEmail='imran5426117@gmail.com';
 const allowed=new Set((Deno.env.get('ALLOWED_ORIGINS')||'https://velmurugan-finance.flare8278.workers.dev,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173').split(','));
 const hex=(bytes:ArrayBuffer)=>Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
 const hash=async(value:string)=>hex(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));
@@ -55,7 +54,6 @@ Deno.serve(async req=>{
    let email='';
    if(action==='owner-login'){
     email=text(body.email).toLowerCase();await limit('owner-login:'+email,10,900);
-    if(email!==ownerEmail)throw new ApiError('Invalid login details',401);
    }else{
     const code=text(body.customer_id,30).toUpperCase();await limit('client-login:'+code,10,900);
     if(!/^[A-Z0-9-]{3,30}$/.test(code))throw new ApiError('Invalid login details',401);
@@ -67,6 +65,14 @@ Deno.serve(async req=>{
    const client=createClient(url,anonKey,{auth:{persistSession:false,autoRefreshToken:false}});
    const {data,error}=await client.auth.signInWithPassword({email,password:pw});
    if(error||!data.session)throw new ApiError('Invalid login details',401);
+   if(action==='owner-login'){
+    const {data:profile,error:profileError}=await admin.from('finance_profiles')
+     .select('role,active').eq('user_id',data.user.id).maybeSingle();
+    if(profileError||profile?.role!=='owner'||!profile.active){
+     await client.auth.signOut({scope:'local'});
+     throw new ApiError('Invalid login details',401);
+    }
+   }
    return respond(sessionResult(data.session));
   }
   if(action==='send-code'){
@@ -87,6 +93,20 @@ Deno.serve(async req=>{
    const id=text(body.challenge_id,50),code=text(body.code,6);if(!/^\d{6}$/.test(code))throw new ApiError('Enter the six-digit code');
    const ok=await rpc('finance_service_verify_code',{p_user:i.user.id,p_session:i.session,p_id:id,p_hash:await hash(serviceKey+':'+id+':'+code)});
    if(!ok)throw new ApiError('Code is incorrect, expired or already used',401);
+   return respond({ok:true});
+  }
+  if(action==='create-owner'){
+   const i=await verifiedOwner(req);
+   const email=text(body.email,254).toLowerCase(),pw=password(body.password);
+   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new ApiError('Enter a valid administrator email');
+   await limit('create-owner:'+i.user.id,5,3600);
+   const {data,error}=await admin.auth.admin.createUser({email,password:pw,email_confirm:true});
+   if(error||!data.user)throw new ApiError('Could not create the administrator. Check whether the email is already in use.');
+   const {error:profileError}=await admin.from('finance_profiles').insert({user_id:data.user.id,role:'owner',active:true});
+   if(profileError){
+    await admin.auth.admin.deleteUser(data.user.id);
+    throw new ApiError('Could not activate the administrator account.',502);
+   }
    return respond({ok:true});
   }
   if(action==='provision-client'){
