@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import type {FormEvent, ReactNode} from 'react';
 import {Login, VerifyEmail, ErrorText} from './Auth';
+import {AdministratorPanel} from './AdministratorPanel';
 import {api, businessDate, date, logout, money, rpc, supabase} from './api';
 import {VaultPanel, download} from './VaultPanel';
 import {encryptWalletRecord} from './vault';
@@ -266,13 +267,6 @@ export default function App() {
       setPage('overview');
     }
   }, [profile, owner, page]);
-
-  useEffect(() => {
-    if (!vaultKey && modal === 'credentials') {
-      setModal(null);
-      setFormError('');
-    }
-  }, [vaultKey, modal]);
 
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout>;
@@ -1023,14 +1017,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     className="text-button"
-                                    onClick={() => {
-                                      if (!vaultKey) {
-                                        setPage('wallet');
-                                        notify(
-                                          'Unlock the wallet first to securely save the password.'
-                                        );
-                                      } else open('credentials', c.id);
-                                    }}
+                                    onClick={() => open('credentials', c.id)}
                                   >
                                     {c.auth_user_id ? 'Reset password' : 'Create login'}
                                   </button>
@@ -1414,6 +1401,7 @@ export default function App() {
                     title="Settings & data protection."
                     subtitle="Review your data guarantees, export records and verify system state."
                   />
+                  <AdministratorPanel />
                   <div className="dashboard-grid">
                     <section className="panel">
                       <div className="panel-head">
@@ -1856,14 +1844,8 @@ export default function App() {
                     type="button"
                     className="button secondary"
                     onClick={() => {
-                      if (!vaultKey) {
-                        close();
-                        setPage('wallet');
-                        notify('Unlock the wallet first to view or save credentials.');
-                      } else {
-                        close();
-                        open('credentials', activeClient.id);
-                      }
+                      close();
+                      open('credentials', activeClient.id);
                     }}
                   >
                     <LockIcon size={14} /> Secret wallet
@@ -1917,6 +1899,25 @@ export default function App() {
                 </div>
               )}
             </div>
+          ) : modal === 'credentials' && !vaultKey ? (
+            vaultRow ? (
+              <VaultPanel
+                row={vaultRow}
+                setRow={setVaultRow}
+                keyValue={null}
+                setKey={setVaultKey}
+                clients={[]}
+                onChanged={reload}
+              />
+            ) : (
+              <div>
+                <p>Set up your Secret Wallet and save its recovery kit before creating a client password.</p>
+                <button type="button" className="button secondary" onClick={() => {
+                  close();
+                  setPage('wallet');
+                }}>Set up Secret Wallet</button>
+              </div>
+            )
           ) : (
             <form onSubmit={submit}>
               {modal === 'client' && (
@@ -2357,7 +2358,7 @@ export default function App() {
                 <>
                   <p className="muted">
                     Save the client password into your browser-encrypted secret wallet. The
-                    password is encrypted before being sent to the client’s private account.
+                    wallet copy is encrypted in your browser before it is saved.
                   </p>
                   <label>
                     Password
@@ -2366,7 +2367,7 @@ export default function App() {
                       type="password"
                       autoComplete="new-password"
                       required
-                      minLength={8}
+                      minLength={12}
                       maxLength={128}
                     />
                   </label>
