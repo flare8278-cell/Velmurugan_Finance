@@ -1,8 +1,16 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.119.0';
+import nodemailer from 'npm:nodemailer@10.6.1';
 
 const url=Deno.env.get('SUPABASE_URL')!;
 const serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const anonKey=Deno.env.get('SUPABASE_ANON_KEY')!;
+const gmailUser=Deno.env.get('GMAIL_SMTP_USER')?.trim();
+const gmailPassword=Deno.env.get('GMAIL_SMTP_APP_PASSWORD')?.replace(/\s/g,'');
+const gmail=gmailUser&&gmailPassword?nodemailer.createTransport({
+ host:'smtp.gmail.com',port:465,secure:true,
+ auth:{user:gmailUser,pass:gmailPassword},
+ connectionTimeout:10000,greetingTimeout:10000,socketTimeout:15000,
+}):null;
 const admin=createClient(url,serviceKey,{auth:{persistSession:false,autoRefreshToken:false}});
 const allowed=new Set((Deno.env.get('ALLOWED_ORIGINS')||'https://velmurugan-finance.flare8278.workers.dev,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173').split(','));
 const hex=(bytes:ArrayBuffer)=>Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
@@ -33,7 +41,7 @@ Deno.serve(async req=>{
  const respond=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
  if(origin&&!allowed.has(origin))return respond({error:'Origin not allowed'},403);
  if(req.method==='OPTIONS')return new Response(null,{status:204,headers});
- if(req.method==='GET')return respond({service:'finance-api',email_delivery_configured:Boolean(Deno.env.get('RESEND_API_KEY')&&Deno.env.get('MAIL_FROM'))});
+ if(req.method==='GET')return respond({service:'finance-api',email_delivery_configured:Boolean(gmail||(Deno.env.get('RESEND_API_KEY')&&Deno.env.get('MAIL_FROM')))});
  if(req.method!=='POST')return respond({error:'Method not allowed'},405);
  try{
   if(Number(req.headers.get('content-length')||0)>250000)throw new ApiError('Request too large',413);
@@ -78,20 +86,30 @@ Deno.serve(async req=>{
   if(action==='send-code'){
    const i=await identity(req);if(i.ctx.role!=='owner')throw new ApiError('Owner account required',403);
    const key=Deno.env.get('RESEND_API_KEY'),from=Deno.env.get('MAIL_FROM');
-   if(!key||!from)throw new ApiError('Verification email is not configured. Ask the owner to configure the email sender.',503);
+   if(!gmail&&(!key||!from))throw new ApiError('Verification email is not configured. Ask the owner to configure the email sender.',503);
    await limit('send-code:'+i.user.id,5,3600);
    const id=crypto.randomUUID(),random=new Uint32Array(1);let value:number;
    do{crypto.getRandomValues(random);value=random[0]}while(value>=4294000000);
    const code=String(value%1000000).padStart(6,'0');
    await rpc('finance_service_issue_code',{p_user:i.user.id,p_session:i.session,p_id:id,p_hash:await hash(serviceKey+':'+id+':'+code)});
-   const mail=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json','Idempotency-Key':id},body:JSON.stringify({from,to:[i.user.email],subject:'Velmurugan Finance — verification code',text:'Your sign-in code is '+code+'. It expires in 10 minutes. Do not share it.'})});
-   if(!mail.ok)throw new ApiError('Email delivery failed. Try again after one minute.',502);
+   const message={to:i.user.email,subject:'Velmurugan Finance — verification code',text:'Your sign-in code is '+code+'. It expires in 10 minutes. Do not share it.'};
+   try{
+    if(gmail){
+     await gmail.sendMail({...message,from:{name:'Velmurugan Finance',address:gmailUser!}});
+    }else{
+     const mail=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json','Idempotency-Key':id},body:JSON.stringify({...message,from})});
+     if(!mail.ok)throw new Error('Email provider rejected the request');
+    }
+   }catch{
+    throw new ApiError('Email delivery failed. Try again after one minute.',502);
+   }
    return respond({challenge_id:id,expires_in:600});
   }
   if(action==='verify-code'){
    const i=await identity(req);if(i.ctx.role!=='owner')throw new ApiError('Owner account required',403);
    const id=text(body.challenge_id,50),code=text(body.code,6);if(!/^\d{6}$/.test(code))throw new ApiError('Enter the six-digit code');
-   const ok=await rpc('finance_service_verify_code',{p_user:i.user.id,p_session:i.session,p_id:id,p_hash:await hash(serviceKey+':'+id+':'+code)});
+   const verify=body.trusted_device===true?'finance_service_verify_trusted_code':'finance_service_verify_code';
+   const ok=await rpc(verify,{p_user:i.user.id,p_session:i.session,p_id:id,p_hash:await hash(serviceKey+':'+id+':'+code)});
    if(!ok)throw new ApiError('Code is incorrect, expired or already used',401);
    return respond({ok:true});
   }

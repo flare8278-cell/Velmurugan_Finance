@@ -16,9 +16,17 @@ select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-00000000
 set local role service_role;
 select public.finance_service_issue_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('a',64));
 do $$ begin
- if public.finance_service_verify_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('b',64)) then raise exception 'Wrong code accepted'; end if;
- if not public.finance_service_verify_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('a',64)) then raise exception 'Correct code rejected'; end if;
- if public.finance_service_verify_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('a',64)) then raise exception 'Consumed code reused'; end if;
+ if public.finance_service_verify_trusted_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('b',64)) then raise exception 'Wrong code accepted'; end if;
+ if not public.finance_service_verify_trusted_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('a',64)) then raise exception 'Correct code rejected'; end if;
+ if public.finance_service_verify_trusted_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000120',repeat('a',64)) then raise exception 'Consumed code reused'; end if;
+end $$;
+reset role;
+do $$ begin
+ if not exists(select 1 from finance_private.owner_verifications
+   where session_id='00000000-0000-0000-0000-000000000110'
+     and expires_at=now()+interval '30 days') then
+   raise exception 'Trusted verification was not set for 30 days';
+ end if;
 end $$;
 set local role authenticated;
 select public.finance_create_client('LIVE001','Client One') as c1 \gset
@@ -30,7 +38,7 @@ select set_config('test.live.other',:'c2',false);
 do $$ declare duplicate uuid; begin
  duplicate:=public.finance_disburse('00000000-0000-0000-0000-000000000130',current_setting('test.live.client')::uuid,100000,5,(now() at time zone 'Asia/Kolkata')::date,true);
  if duplicate<>current_setting('test.live.loan')::uuid then raise exception 'Disbursement retry duplicated'; end if;
- begin perform public.finance_service_verify_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110',gen_random_uuid(),repeat('a',64)); raise exception 'Service-only RPC exposed'; exception when insufficient_privilege then null; end;
+ begin perform public.finance_service_verify_trusted_code('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110',gen_random_uuid(),repeat('a',64)); raise exception 'Service-only RPC exposed'; exception when insufficient_privilege then null; end;
 end $$;
 reset role;
 update public.finance_clients set auth_user_id='00000000-0000-0000-0000-000000000102' where id=:'c1';

@@ -1,5 +1,5 @@
 import {lazy, Suspense, useEffect, useState} from 'react';
-import {api, configured, signIn} from './api';
+import {api, configured, persistVerifiedSession, signIn, wantsTrustedDevice} from './api';
 import {ArrowRightIcon} from './icons';
 import type {Profile} from './types';
 
@@ -73,7 +73,7 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
               setBusy(true);
               setError('');
               try {
-                await signIn(kind, String(data.get('identifier')), String(data.get('password')));
+                await signIn(kind, String(data.get('identifier')), String(data.get('password')), data.has('trustDevice'));
                 f.reset();
                 await onSuccess();
               } catch (err) {
@@ -106,6 +106,12 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
                 maxLength={128}
               />
             </label>
+            {kind === 'owner' && (
+              <label style={{flexDirection: 'row', alignItems: 'center', gap: 10}}>
+                <input name="trustDevice" type="checkbox" style={{width: 'auto'}} />
+                <span>Keep me signed in on this device for 30 days</span>
+              </label>
+            )}
             <ErrorText message={error} />
             {!configured && (
               <ErrorText message="The application is missing its public Supabase configuration. Contact the owner." />
@@ -192,10 +198,13 @@ export function VerifyEmail({
               setBusy(true);
               setError('');
               try {
+                const trustedDevice = wantsTrustedDevice();
                 await api('verify-code', {
                   challenge_id: challenge,
-                  code: String(new FormData(e.currentTarget).get('code'))
+                  code: String(new FormData(e.currentTarget).get('code')),
+                  trusted_device: trustedDevice
                 });
+                if (trustedDevice) persistVerifiedSession();
                 await onSuccess();
               } catch (err) {
                 setError((err as Error).message);
