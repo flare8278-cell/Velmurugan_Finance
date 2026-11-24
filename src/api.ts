@@ -9,13 +9,40 @@ const key =
 
 export const configured = Boolean(key);
 
+const sessionKey = 'velmurugan-auth';
+const trustPreference = 'velmurugan-trust-device';
+const browserStorage = typeof window === 'undefined' ? undefined : {
+  getItem: (name: string) => sessionStorage.getItem(name) ?? localStorage.getItem(name),
+  setItem: (name: string, value: string) => {
+    if (name === sessionKey && localStorage.getItem(name) !== null) localStorage.setItem(name, value);
+    else sessionStorage.setItem(name, value);
+  },
+  removeItem: (name: string) => {
+    sessionStorage.removeItem(name);
+    localStorage.removeItem(name);
+  }
+};
+
+export function wantsTrustedDevice() {
+  return sessionStorage.getItem(trustPreference) === '1' || localStorage.getItem(sessionKey) !== null;
+}
+
+export function persistVerifiedSession() {
+  const session = sessionStorage.getItem(sessionKey);
+  if (session) {
+    localStorage.setItem(sessionKey, session);
+    sessionStorage.removeItem(sessionKey);
+  }
+  sessionStorage.removeItem(trustPreference);
+}
+
 export const supabase = createClient(projectUrl, key || 'not-configured', {
   auth: {
     persistSession: true,
-    storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
+    storage: browserStorage,
     autoRefreshToken: true,
     detectSessionInUrl: false,
-    storageKey: 'velmurugan-auth'
+    storageKey: sessionKey
   }
 });
 
@@ -39,11 +66,14 @@ export async function api(action: string, body: Record<string, unknown> = {}) {
   return data;
 }
 
-export async function signIn(kind: 'owner' | 'client', identifier: string, password: string) {
+export async function signIn(kind: 'owner' | 'client', identifier: string, password: string, trustDevice = false) {
   const data = await api(
     kind + '-login',
     kind === 'owner' ? {email: identifier, password} : {customer_id: identifier, password}
   );
+  localStorage.removeItem(sessionKey);
+  sessionStorage.removeItem(trustPreference);
+  if (kind === 'owner' && trustDevice) sessionStorage.setItem(trustPreference, '1');
   const result = await supabase.auth.setSession(data.session);
   if (result.error) throw result.error;
   return result.data.session as Session;
@@ -63,7 +93,8 @@ export async function logout() {
     await supabase.auth.signOut({scope: 'local'});
   } finally {
     if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem('velmurugan-auth');
+      browserStorage?.removeItem(sessionKey);
+      sessionStorage.removeItem(trustPreference);
     }
   }
 }
