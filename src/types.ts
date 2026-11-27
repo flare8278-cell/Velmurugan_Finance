@@ -42,11 +42,21 @@ export type Loan = {
   disbursed_on: string;
   first_due_on: string;
   next_due_on: string;
+  terms_code?: string;
   balance: {
     principal: number;
     interest: number;
     total: number;
   };
+};
+
+export type InterestCharge = {
+  id: string;
+  loan_id: string;
+  due_on: string;
+  principal_basis: number;
+  rate: number;
+  amount: number;
 };
 
 export type Payment = {
@@ -83,7 +93,7 @@ export type Workspace = {
   payments: Payment[];
   queries: Question[];
   messages: Message[];
-  charges: unknown[];
+  charges: InterestCharge[];
   refreshed_at: string;
   business_date: string;
 };

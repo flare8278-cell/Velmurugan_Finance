@@ -40,13 +40,17 @@ test('App.tsx implements borrower Home, Loans, Profile views and mobile bottom t
   assert.match(appCode, /<BorrowerLoansView/, 'Must render BorrowerLoansView on loans');
   assert.match(appCode, /<BorrowerProfileView/, 'Must render BorrowerProfileView on profile');
 
-  // Overdue posted monthly interest derivation
-  assert.match(appCode, /loans\.filter\(l => Number\(l\.balance\.interest\) > 0\)/, 'Must filter loans with positive balance.interest for overdue interest');
-  assert.match(appCode, /Overdue Posted Monthly Interest/, 'Must display overdue posted monthly interest banner');
-
-  // Installment calculations and identity fields notice
-  assert.match(appCode, /Installment calculation structures, amortization schedules, and borrower identity document uploads await user specifications/, 'Must note installment schedules await user specs');
+  // Simplified Borrower Home: four metrics only, no receipts or hero clutter
+  assert.match(appCode, /summarizeBorrowerHome\(/, 'Home must derive metrics via summarizeBorrowerHome');
+  assert.match(appCode, /className="stats borrower-home-stats"/, 'Home must render borrower-home-stats');
+  assert.match(appCode, /No persisted installment schedule exists for this loan/, 'Must state no persisted installment schedule exists');
   assert.match(appCode, /Borrower identity fields, KYC document uploads.*await user specifications/, 'Must note identity verification awaits user specs');
+
+  // Per-loan drill-down, charge ledger, paid history, and receipt downloads
+  assert.match(appCode, /allocateLoanInterestCharges\(/, 'Loans must allocate real interest charges');
+  assert.match(appCode, /getPersistedInstallmentSupport\(/, 'Loans must check persisted installment support');
+  assert.match(appCode, /getLoanPayments\(/, 'Loans detail must filter paid history per loan');
+  assert.match(appCode, /Download receipt/, 'Loans and receipt modal must support downloading receipts');
 
   // Preserved questions and receipt viewing
   assert.match(appCode, /<QuestionThreads/, 'Must preserve QuestionThreads under Profile');
@@ -62,10 +66,11 @@ test('styles.css contains mobile bottom nav and borrower view styling', () => {
   assert.match(css, /\.borrower-shell\s+\.main-content\s*\{[\s\S]*?padding-bottom:/, 'main-content must have bottom padding on mobile in borrower-shell');
 
   // Component styles
-  assert.match(css, /\.borrower-hero-card/, 'CSS must style borrower-hero-card');
-  assert.match(css, /\.borrower-hero-card\.overdue/, 'CSS must style overdue hero card');
+  assert.match(css, /\.borrower-month-status-card/, 'CSS must style borrower-month-status-card');
+  assert.match(css, /\.borrower-month-status-card\.status-overdue/, 'CSS must style overdue status card');
+  assert.match(css, /\.borrower-charge-badge/, 'CSS must style charge status badge');
   assert.match(css, /\.borrower-allocation-note/, 'CSS must style borrower allocation note');
-  assert.match(css, /\.borrower-notice-card/, 'CSS must style borrower notice card');
+  assert.match(css, /\.receipt-row-actions/, 'CSS must style receipt row actions');
   assert.match(css, /\.borrower-profile-card/, 'CSS must style borrower profile card');
   assert.match(css, /\.bottom-nav-item\.active/, 'CSS must style active bottom nav tab');
 });

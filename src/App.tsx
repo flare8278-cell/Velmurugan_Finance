@@ -27,8 +27,18 @@ import {
   ShieldIcon
 } from './icons';
 import {generateDocxArchive, downloadDocx} from './docxArchive';
+import {
+  allocateLoanInterestCharges,
+  buildReceiptHtml,
+  formatReceiptFilename,
+  fromPaise,
+  getLoanPayments,
+  getPersistedInstallmentSupport,
+  summarizeBorrowerHome
+} from './borrowerLedger';
 import type {
   Client,
+  InterestCharge,
   Loan,
   Payment,
   Profile,
@@ -128,6 +138,7 @@ export default function App() {
   const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentLoan, setPaymentLoan] = useState('');
+  const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Payment | null>(null);
   const [driveUrl, setDriveUrl] = useState('');
   const [archiveDownloaded, setArchiveDownloaded] = useState(false);
@@ -152,6 +163,7 @@ export default function App() {
     setVaultRow(null);
     setModal(null);
     setActiveClient(null);
+    setSelectedLoanId(null);
     setReceipt(null);
     setPurgeInput('');
     setPurgeSafetyResult('');
@@ -607,6 +619,23 @@ export default function App() {
   const client = (id: string) => data.clients.find(c => c.id === id);
   const loan = (id: string) => data.loans.find(l => l.id === id);
 
+  const downloadReceiptFile = (p: Payment) => {
+    const paymentLoan = loan(p.loan_id);
+    const paymentClient =
+      client(paymentLoan?.client_id || '') || (owner ? undefined : data.clients[0]);
+    const html = buildReceiptHtml(p, paymentLoan, paymentClient);
+    const filename = formatReceiptFilename(p);
+    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const totals = {
     capital: data.loans.reduce((n, l) => n + Number(l.balance.principal), 0),
     interest: data.loans.reduce((n, l) => n + Number(l.balance.interest), 0),
@@ -710,6 +739,7 @@ export default function App() {
               onClick={() => {
                 setPage(p);
                 setMobile(false);
+                setSelectedLoanId(null);
                 setReceipt(null);
                 setSearch('');
               }}
@@ -931,11 +961,13 @@ export default function App() {
                   <BorrowerHomeView
                     borrower={data.clients[0]}
                     loans={data.loans}
+                    charges={data.charges}
                     payments={data.payments}
-                    totals={totals}
-                    onNavigate={setPage}
-                    onReceipt={setReceipt}
-                    onAskQuestion={() => open('question')}
+                    businessDateValue={data.business_date || businessDate()}
+                    onOpenLoans={() => {
+                      setSelectedLoanId(null);
+                      setPage('loans');
+                    }}
                   />
                 )
               )}
@@ -1156,9 +1188,13 @@ export default function App() {
                 ) : (
                   <BorrowerLoansView
                     loans={data.loans}
+                    charges={data.charges}
                     payments={data.payments}
+                    businessDateValue={data.business_date || businessDate()}
+                    selectedLoanId={selectedLoanId}
+                    onSelectLoan={setSelectedLoanId}
                     onReceipt={setReceipt}
-                    onAskQuestion={() => open('question')}
+                    onDownloadReceipt={downloadReceiptFile}
                   />
                 )
               )}
@@ -2427,13 +2463,22 @@ export default function App() {
                 {receipt.method} · {receipt.reference || '—'}
               </dd>
             </dl>
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => window.print()}
-            >
-              Print / Save PDF
-            </button>
+            <div className="receipt-modal-actions">
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => downloadReceiptFile(receipt)}
+              >
+                Download receipt
+              </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => window.print()}
+              >
+                Print / Save PDF
+              </button>
+            </div>
           </div>
         </ModalFrame>
       )}
@@ -2445,6 +2490,7 @@ export default function App() {
             className={'bottom-nav-item ' + (page === 'overview' ? 'active' : '')}
             onClick={() => {
               setPage('overview');
+              setSelectedLoanId(null);
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -2458,6 +2504,7 @@ export default function App() {
             className={'bottom-nav-item ' + (page === 'loans' ? 'active' : '')}
             onClick={() => {
               setPage('loans');
+              setSelectedLoanId(null);
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -2471,6 +2518,7 @@ export default function App() {
             className={'bottom-nav-item ' + (page === 'profile' ? 'active' : '')}
             onClick={() => {
               setPage('profile');
+              setSelectedLoanId(null);
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -2932,263 +2980,98 @@ function QuestionThreads({
   );
 }
 
+function monthLabel(monthKey: string): string {
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return monthKey;
+  const d = new Date(monthKey + '-01T12:00:00');
+  if (Number.isNaN(d.getTime())) return monthKey;
+  return d.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'});
+}
+
+function chargeBadgeTone(status: string): string {
+  if (status === 'paid' || status === 'settled') return 'paid';
+  if (status === 'overdue' || status === 'partial_overdue') return 'overdue';
+  if (status === 'due_today' || status === 'partial_due_today' || status === 'partial') return 'warm';
+  return 'neutral';
+}
+
 function BorrowerHomeView({
   borrower,
   loans,
+  charges,
   payments,
-  totals,
-  onNavigate,
-  onReceipt,
-  onAskQuestion
+  businessDateValue,
+  onOpenLoans
 }: {
   borrower?: Client;
   loans: Loan[];
+  charges: InterestCharge[];
   payments: Payment[];
-  totals: {capital: number; interest: number; monthly: number};
-  onNavigate: (page: Page) => void;
-  onReceipt: (payment: Payment) => void;
-  onAskQuestion: () => void;
+  businessDateValue: string;
+  onOpenLoans: () => void;
 }) {
-  const overdueLoans = loans.filter(l => Number(l.balance.interest) > 0);
-  const overdueCount = overdueLoans.length;
-  const overdueAmount = overdueLoans.reduce(
-    (sum, l) => sum + Number(l.balance.interest),
-    0
-  );
-  const totalBalance = totals.capital + totals.interest;
-  const recentPayments = payments.slice(0, 5);
+  const summary = summarizeBorrowerHome(loans, charges, payments, businessDateValue);
+  const interestHint =
+    summary.overdueChargeCount > 0
+      ? `${summary.overdueChargeCount} overdue · ${summary.unpaidChargeCount} open posted`
+      : summary.dueTodayChargeCount > 0
+      ? `${summary.dueTodayChargeCount} due today · ${summary.unpaidChargeCount} open posted`
+      : summary.unpaidChargeCount > 0
+      ? `${summary.unpaidChargeCount} open posted ${summary.unpaidChargeCount === 1 ? 'charge' : 'charges'}`
+      : 'All posted interest cleared';
+
+  const activeLoansHint = summary.earliestNextDueOn
+    ? 'Next monthly charge ' + date(summary.earliestNextDueOn)
+    : summary.totalLoansCount > 0
+    ? `${summary.totalLoansCount} recorded ${summary.totalLoansCount === 1 ? 'loan' : 'loans'}`
+    : 'No loans on record';
 
   return (
     <>
       <PageIntro
-        eyebrow="YOUR ACCOUNT, AT A GLANCE"
+        eyebrow="ACCOUNT SUMMARY"
         title={'Hello, ' + (borrower?.name.split(' ')[0] || 'there') + '.'}
-        subtitle="Your active loans, monthly interest status, and payment receipts."
+        subtitle="Key balances across your Velmurugan Finance loans."
         actions={
           <button
             type="button"
-            className="button secondary"
-            onClick={onAskQuestion}
+            className="button primary"
+            onClick={onOpenLoans}
           >
-            <PlusIcon size={14} /> Ask a question
+            View loans <ChevronRightIcon size={14} />
           </button>
         }
       />
 
-      {overdueCount > 0 ? (
-        <section className="borrower-hero-card overdue">
-          <div className="borrower-hero-top">
-            <div className="borrower-hero-badge overdue">
-              <span className="hero-badge-dot" /> Overdue Posted Monthly Interest
-            </div>
-            <span className="borrower-hero-counter">
-              {overdueCount} {overdueCount === 1 ? 'loan has' : 'loans have'} unpaid interest
-            </span>
-          </div>
-          <div className="borrower-hero-amount-block">
-            <strong className="borrower-hero-val">{money(overdueAmount)}</strong>
-            <span className="borrower-hero-label">Total posted unpaid interest</span>
-          </div>
-          <p className="borrower-hero-desc">
-            Simple interest is accrued monthly on remaining principal. Under our payment rules, your repayments automatically clear all posted unpaid interest before reducing capital.
-          </p>
-          <div className="borrower-hero-actions">
-            <button
-              type="button"
-              className="button primary"
-              onClick={() => onNavigate('loans')}
-            >
-              View loans & monthly detail <ChevronRightIcon size={13} />
-            </button>
-            <button
-              type="button"
-              className="button secondary"
-              onClick={onAskQuestion}
-            >
-              Ask financer about balance
-            </button>
-          </div>
-        </section>
-      ) : (
-        <section className="borrower-hero-card clear">
-          <div className="borrower-hero-top">
-            <div className="borrower-hero-badge clear">
-              <CheckIcon size={14} /> All Monthly Interest Cleared
-            </div>
-            <span className="borrower-hero-counter">0 overdue charges</span>
-          </div>
-          <div className="borrower-hero-amount-block">
-            <strong className="borrower-hero-val">{money(0)}</strong>
-            <span className="borrower-hero-label">No posted unpaid interest</span>
-          </div>
-          <p className="borrower-hero-desc">
-            All posted monthly interest charges are completely up to date. Next interest will accrue on your scheduled due date.
-          </p>
-        </section>
-      )}
-
-      <div className="stats">
+      <div className="stats borrower-home-stats">
         <Stat
-          label="Remaining capital"
-          value={money(totals.capital)}
-          hint="Outstanding principal · Click to view loans"
+          label="Remaining principal"
+          value={money(summary.remainingPrincipal)}
+          hint={
+            summary.activeLoansCount > 0
+              ? 'Outstanding principal across active loans'
+              : 'No remaining loan principal'
+          }
           feature
-          onClick={() => onNavigate('loans')}
+          onClick={onOpenLoans}
         />
         <Stat
-          label="Posted unpaid interest"
-          value={money(totals.interest)}
-          hint={
-            overdueCount > 0
-              ? `${overdueCount} loan(s) pending settlement`
-              : 'All interest settled to date'
-          }
-          onClick={() => onNavigate('loans')}
+          label="Unpaid posted interest"
+          value={money(summary.unpaidInterest)}
+          hint={interestHint}
+          onClick={onOpenLoans}
         />
         <Stat
           label="Total outstanding balance"
-          value={money(totalBalance)}
-          hint="Principal plus unpaid interest"
-          onClick={() => onNavigate('loans')}
+          value={money(summary.totalBalance)}
+          hint="Principal plus unpaid posted interest"
+          onClick={onOpenLoans}
         />
         <Stat
           label="Active loans"
-          value={String(loans.length)}
-          hint="Click to inspect monthly rate breakdown"
-          onClick={() => onNavigate('loans')}
+          value={String(summary.activeLoansCount)}
+          hint={activeLoansHint}
+          onClick={onOpenLoans}
         />
-      </div>
-
-      <div className="dashboard-grid">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Your active loans</h2>
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => onNavigate('loans')}
-            >
-              View details <ChevronRightIcon size={13} />
-            </button>
-          </div>
-          <div className="borrower-loan-list">
-            {loans.map(l => (
-              <div
-                key={l.id}
-                className="borrower-loan-item"
-                onClick={() => onNavigate('loans')}
-                role="button"
-                tabIndex={0}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onNavigate('loans');
-                  }
-                }}
-              >
-                <div className="borrower-loan-item-head">
-                  <strong>Loan #{l.id.slice(0, 8).toUpperCase()}</strong>
-                  <span
-                    className={
-                      'badge ' + (Number(l.balance.interest) > 0 ? 'warm' : '')
-                    }
-                  >
-                    {Number(l.balance.total) === 0
-                      ? 'Settled'
-                      : Number(l.balance.interest) > 0
-                      ? 'Interest unpaid'
-                      : 'Active'}
-                  </span>
-                </div>
-                <div className="borrower-loan-item-metrics">
-                  <div>
-                    <small>Capital remaining</small>
-                    <strong>{money(l.balance.principal)}</strong>
-                  </div>
-                  <div>
-                    <small>Monthly rate</small>
-                    <strong>{l.monthly_rate}%</strong>
-                  </div>
-                  <div>
-                    <small>Unpaid interest</small>
-                    <strong
-                      style={{
-                        color:
-                          Number(l.balance.interest) > 0
-                            ? 'var(--gold-text)'
-                            : 'inherit'
-                      }}
-                    >
-                      {money(l.balance.interest)}
-                    </strong>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {!loans.length && <p className="empty">No active loans found.</p>}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Recent payment receipts</h2>
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => onNavigate('loans')}
-            >
-              All receipts <ChevronRightIcon size={13} />
-            </button>
-          </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Receipt / Date</th>
-                  <th>Amount</th>
-                  <th>Interest</th>
-                  <th>Capital</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentPayments.map(p => (
-                  <tr key={p.id}>
-                    <td>
-                      <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
-                      <small>{date(p.paid_on)} · {p.method}</small>
-                    </td>
-                    <td>{money(p.amount)}</td>
-                    <td>{money(p.interest_paid)}</td>
-                    <td>{money(p.principal_paid)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={() => onReceipt(p)}
-                      >
-                        <ReceiptIcon size={13} /> Receipt
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!recentPayments.length && (
-              <p className="empty">No payment receipts recorded yet.</p>
-            )}
-          </div>
-        </section>
-      </div>
-
-      <div className="borrower-notice-card">
-        <div className="notice-icon">ℹ️</div>
-        <div className="notice-content">
-          <strong>Installment Calculations & Schedule Specifications</strong>
-          <p>
-            Installment calculation structures, amortization schedules, and borrower identity document uploads await user specifications. All loans currently operate under standard simple monthly interest with interest cleared prior to capital reduction.
-          </p>
-        </div>
       </div>
     </>
   );
@@ -3196,120 +3079,340 @@ function BorrowerHomeView({
 
 function BorrowerLoansView({
   loans,
+  charges,
   payments,
+  businessDateValue,
+  selectedLoanId,
+  onSelectLoan,
   onReceipt,
-  onAskQuestion
+  onDownloadReceipt
 }: {
   loans: Loan[];
+  charges: InterestCharge[];
   payments: Payment[];
+  businessDateValue: string;
+  selectedLoanId: string | null;
+  onSelectLoan: (loanId: string | null) => void;
   onReceipt: (payment: Payment) => void;
-  onAskQuestion: () => void;
+  onDownloadReceipt: (payment: Payment) => void;
 }) {
-  const totalOriginal = loans.reduce(
-    (acc, l) => acc + Number(l.original_principal),
-    0
+  const activeLoan = selectedLoanId
+    ? loans.find(l => l.id === selectedLoanId) || null
+    : null;
+
+  if (!activeLoan) {
+    return (
+      <>
+        <PageIntro
+          eyebrow="YOUR LOANS"
+          title="Your loans."
+          subtitle="Select a loan to inspect current-month posted interest status and paid receipts."
+        />
+
+        <div className="loan-grid">
+          {loans.map(l => {
+            const ledger = allocateLoanInterestCharges(
+              l,
+              charges,
+              payments,
+              businessDateValue
+            );
+            const cm = ledger.currentMonthStatus;
+            const loanPayments = getLoanPayments(l.id, payments);
+            const isSettled = Number(l.balance.total) === 0;
+            const needsAttention =
+              cm.state === 'overdue' ||
+              cm.state === 'due_today' ||
+              cm.state === 'partial' ||
+              cm.priorUnpaidPaise > 0 ||
+              Number(l.balance.interest) > 0;
+            const badgeText = isSettled
+              ? 'Settled'
+              : cm.hasPostedCharge && cm.unpaidPaise > 0
+              ? cm.label
+              : cm.priorUnpaidPaise > 0
+              ? 'Prior interest unpaid'
+              : cm.hasPostedCharge && cm.state === 'paid'
+              ? 'Current month paid'
+              : 'Active';
+
+            return (
+              <article
+                className="loan-card loan-card-action"
+                key={l.id}
+                onClick={() => onSelectLoan(l.id)}
+              >
+                <div className="panel-head">
+                  <div>
+                    <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
+                    <small>Disbursed on {date(l.disbursed_on)}</small>
+                  </div>
+                  <span className={'badge ' + (needsAttention && !isSettled ? 'warm' : '')}>
+                    {badgeText}
+                  </span>
+                </div>
+                <div className="loan-facts">
+                  <Fact
+                    label="Capital remaining"
+                    value={money(l.balance.principal)}
+                  />
+                  <Fact
+                    label="Unpaid posted interest"
+                    value={money(l.balance.interest)}
+                  />
+                  <Fact
+                    label="Monthly rate"
+                    value={String(l.monthly_rate) + '%'}
+                  />
+                  <Fact
+                    label="Current month"
+                    value={cm.label}
+                  />
+                  <Fact
+                    label="Next due date"
+                    value={
+                      Number(l.balance.principal) > 0
+                        ? date(l.next_due_on)
+                        : 'Settled'
+                    }
+                  />
+                  <Fact
+                    label="Paid receipts"
+                    value={String(loanPayments.length)}
+                  />
+                </div>
+                <div className="loan-card-footer">
+                  <button
+                    type="button"
+                    className="button primary loan-open-btn"
+                    onClick={e => {
+                      e.stopPropagation();
+                      onSelectLoan(l.id);
+                    }}
+                  >
+                    Open loan details <ChevronRightIcon size={14} />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+          {!loans.length && (
+            <section className="panel">
+              <p className="empty">No loans found for this account.</p>
+            </section>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  const ledger = allocateLoanInterestCharges(
+    activeLoan,
+    charges,
+    payments,
+    businessDateValue
   );
-  const totalPrincipal = loans.reduce(
-    (acc, l) => acc + Number(l.balance.principal),
-    0
-  );
-  const totalInterest = loans.reduce(
-    (acc, l) => acc + Number(l.balance.interest),
-    0
-  );
-  const totalPaid = payments.reduce((acc, p) => acc + Number(p.amount), 0);
+  const cm = ledger.currentMonthStatus;
+  const installmentSupport = getPersistedInstallmentSupport(activeLoan);
+  const loanPayments = getLoanPayments(activeLoan.id, payments);
+  const monthText = monthLabel(cm.monthKey);
+  const statusTone =
+    cm.state === 'overdue' || cm.label.includes('Overdue')
+      ? 'overdue'
+      : cm.state === 'due_today' ||
+        cm.state === 'partial' ||
+        cm.priorUnpaidPaise > 0
+      ? 'warm'
+      : cm.state === 'paid' || cm.state === 'settled'
+      ? 'paid'
+      : 'neutral';
 
   return (
     <>
+      <div className="borrower-back-bar">
+        <button
+          type="button"
+          className="button secondary"
+          onClick={() => onSelectLoan(null)}
+        >
+          ← Back to loans
+        </button>
+      </div>
+
       <PageIntro
-        eyebrow="CAPITAL & MONTHLY INTEREST"
-        title="Your loans & payment history."
-        subtitle="Detailed monthly interest rates, capital balance, and official payment receipts."
-        actions={
-          <button
-            type="button"
-            className="button secondary"
-            onClick={onAskQuestion}
-          >
-            <PlusIcon size={14} /> Ask a question
-          </button>
-        }
+        eyebrow={'LOAN #' + activeLoan.id.slice(0, 8).toUpperCase()}
+        title="Current-month interest & paid history."
+        subtitle={`Disbursed on ${date(activeLoan.disbursed_on)} · Rate ${activeLoan.monthly_rate}% monthly simple interest`}
       />
 
-      <div className="stats">
-        <Stat label="Total borrowed" value={money(totalOriginal)} />
-        <Stat label="Capital remaining" value={money(totalPrincipal)} feature />
-        <Stat label="Unpaid interest" value={money(totalInterest)} />
-        <Stat label="Total repayments" value={money(totalPaid)} />
-      </div>
+      <section className={'borrower-month-status-card status-' + statusTone}>
+        <div className="borrower-hero-top">
+          <span
+            className={
+              'borrower-charge-badge ' +
+              chargeBadgeTone(
+                cm.state === 'partial' && cm.label.includes('Overdue')
+                  ? 'partial_overdue'
+                  : cm.state
+              )
+            }
+          >
+            {cm.label}
+          </span>
+          <span className="borrower-hero-counter">
+            {monthText} · As of {date(businessDateValue)}
+          </span>
+        </div>
 
-      <div className="loan-grid">
-        {loans.map(l => (
-          <article className="loan-card" key={l.id}>
-            <div className="panel-head">
+        <div className="borrower-detail-metrics">
+          {cm.hasPostedCharge ? (
+            <>
               <div>
-                <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
-                <small>Disbursed on {date(l.disbursed_on)}</small>
+                <small>Posted interest ({monthText})</small>
+                <strong>{money(fromPaise(cm.postedPaise))}</strong>
               </div>
-              <span
-                className={
-                  'badge ' + (Number(l.balance.interest) > 0 ? 'warm' : '')
-                }
-              >
-                {Number(l.balance.total) === 0
-                  ? 'Settled'
-                  : Number(l.balance.interest) > 0
-                  ? 'Interest unpaid'
-                  : 'Active'}
-              </span>
-            </div>
-            <div className="loan-facts">
-              <Fact label="Originally borrowed" value={money(l.original_principal)} />
-              <Fact label="Monthly rate" value={String(l.monthly_rate) + '%'} />
-              <Fact label="Capital remaining" value={money(l.balance.principal)} />
-              <Fact label="Unpaid interest" value={money(l.balance.interest)} />
-              <Fact label="Total outstanding" value={money(l.balance.total)} />
-              <Fact
-                label="Next interest estimate"
-                value={money(
-                  (Number(l.balance.principal) * Number(l.monthly_rate)) / 100
-                )}
-              />
-              <Fact label="Borrowed on" value={date(l.disbursed_on)} />
-              <Fact label="First interest due" value={date(l.first_due_on)} />
-              <Fact
-                label="Next interest due"
-                value={
-                  Number(l.balance.principal) > 0
-                    ? date(l.next_due_on)
-                    : 'No further capital interest'
-                }
-              />
-            </div>
-            <div className="borrower-allocation-note">
-              <strong>Payment Allocation Rule:</strong>
-              <span>
-                {' '}Under monthly_remaining_v1, repayments clear posted unpaid interest first ({money(l.balance.interest)}), then reduce remaining capital.
-              </span>
-            </div>
-          </article>
-        ))}
-        {!loans.length && <p className="empty">No loans found for this account.</p>}
-      </div>
+              <div>
+                <small>Cleared by payments</small>
+                <strong>{money(fromPaise(cm.paidPaise))}</strong>
+              </div>
+              <div>
+                <small>Unpaid this month</small>
+                <strong>{money(fromPaise(cm.unpaidPaise))}</strong>
+              </div>
+              <div>
+                <small>Due date</small>
+                <strong>{cm.dueOn ? date(cm.dueOn) : '—'}</strong>
+              </div>
+            </>
+          ) : cm.state === 'settled' ? (
+            <>
+              <div>
+                <small>Posted interest ({monthText})</small>
+                <strong>{money(0)}</strong>
+              </div>
+              <div>
+                <small>Remaining principal</small>
+                <strong>{money(0)}</strong>
+              </div>
+              <div>
+                <small>Status</small>
+                <strong>Settled</strong>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <small>Posted interest ({monthText})</small>
+                <strong>Not yet posted</strong>
+              </div>
+              <div>
+                <small>Next posting date</small>
+                <strong>{cm.dueOn ? date(cm.dueOn) : '—'}</strong>
+              </div>
+              <div>
+                <small>Remaining principal</small>
+                <strong>{money(activeLoan.balance.principal)}</strong>
+              </div>
+              <div>
+                <small>Unpaid posted interest</small>
+                <strong>{money(activeLoan.balance.interest)}</strong>
+              </div>
+            </>
+          )}
+        </div>
 
-      <section className="panel" style={{marginTop: 24}}>
+        {cm.priorUnpaidPaise > 0 && (
+          <p className="borrower-prior-warning">
+            Prior-month unpaid posted interest: {money(fromPaise(cm.priorUnpaidPaise))}. Recorded interest payments apply oldest-first before clearing current-month charges.
+          </p>
+        )}
+
+        <div className="loan-facts borrower-detail-facts">
+          <Fact label="Originally borrowed" value={money(activeLoan.original_principal)} />
+          <Fact label="Capital remaining" value={money(activeLoan.balance.principal)} />
+          <Fact label="Total unpaid interest" value={money(activeLoan.balance.interest)} />
+          <Fact label="Total outstanding" value={money(activeLoan.balance.total)} />
+          <Fact label="First interest due" value={date(activeLoan.first_due_on)} />
+          <Fact
+            label="Next interest due"
+            value={
+              Number(activeLoan.balance.principal) > 0
+                ? date(activeLoan.next_due_on)
+                : 'No further charges'
+            }
+          />
+        </div>
+
+        <div className="borrower-allocation-note">
+          <strong>Terms ({installmentSupport.termsCode}):</strong>
+          <span>
+            {' '}Monthly simple interest is posted on remaining principal as monthly interest charges. No persisted installment schedule exists for this loan.
+          </span>
+        </div>
+      </section>
+
+      <section className="panel" style={{marginTop: 20}}>
         <div className="panel-head">
           <div>
-            <h2>Official payment receipts</h2>
-            <small>{payments.length} receipts on record</small>
+            <h2>Posted monthly interest charges</h2>
+            <small>
+              {ledger.rowsNewestFirst.length}{' '}
+              {ledger.rowsNewestFirst.length === 1 ? 'charge' : 'charges'} posted
+            </small>
           </div>
         </div>
         <div className="table-scroll">
           <table>
             <thead>
               <tr>
-                <th>Receipt ID</th>
-                <th>Paid on</th>
+                <th>Due date</th>
+                <th>Principal basis</th>
+                <th>Rate</th>
+                <th>Posted</th>
+                <th>Cleared</th>
+                <th>Unpaid</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ledger.rowsNewestFirst.map(row => (
+                <tr key={row.charge.id}>
+                  <td>{date(row.charge.due_on)}</td>
+                  <td>{money(row.charge.principal_basis)}</td>
+                  <td>{row.charge.rate}%</td>
+                  <td><strong>{money(fromPaise(row.amountPaise))}</strong></td>
+                  <td>{money(fromPaise(row.paidPaise))}</td>
+                  <td>{money(fromPaise(row.unpaidPaise))}</td>
+                  <td>
+                    <span className={'borrower-charge-badge ' + chargeBadgeTone(row.status)}>
+                      {row.statusLabel}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!ledger.rowsNewestFirst.length && (
+            <p className="empty">No monthly interest charges have been posted for this loan yet.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="panel" style={{marginTop: 20}}>
+        <div className="panel-head">
+          <div>
+            <h2>Paid history</h2>
+            <small>
+              {loanPayments.length}{' '}
+              {loanPayments.length === 1 ? 'receipt' : 'receipts'} for this loan
+            </small>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Receipt / Date</th>
                 <th>Amount</th>
                 <th>Interest cleared</th>
                 <th>Capital reduced</th>
@@ -3318,51 +3421,42 @@ function BorrowerLoansView({
               </tr>
             </thead>
             <tbody>
-              {payments.map(p => (
+              {loanPayments.map(p => (
                 <tr key={p.id}>
                   <td>
                     <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
+                    <small>{date(p.paid_on)}</small>
                     <CopyButton text={p.id} label="ID" />
                   </td>
-                  <td>{date(p.paid_on)}</td>
                   <td><strong>{money(p.amount)}</strong></td>
                   <td>{money(p.interest_paid)}</td>
                   <td>{money(p.principal_paid)}</td>
                   <td>{p.method} · {p.reference || '—'}</td>
                   <td>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => onReceipt(p)}
-                    >
-                      <ReceiptIcon size={13} /> Receipt
-                    </button>
+                    <div className="receipt-row-actions">
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => onReceipt(p)}
+                      >
+                        <ReceiptIcon size={13} /> View
+                      </button>
+                      <button
+                        type="button"
+                        className="button secondary small-btn"
+                        onClick={() => onDownloadReceipt(p)}
+                      >
+                        Download receipt
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!payments.length && (
-            <p className="empty">No payments recorded yet.</p>
+          {!loanPayments.length && (
+            <p className="empty">No payments recorded for this loan yet.</p>
           )}
-        </div>
-      </section>
-
-      <section className="panel" style={{marginTop: 20}}>
-        <div className="panel-head">
-          <h2>Questions regarding your loans?</h2>
-        </div>
-        <div className="panel-body">
-          <p className="muted" style={{marginBottom: 14}}>
-            If you have questions about your monthly interest assessment, principal reduction, or receipt details, you can contact Velmurugan Finance directly.
-          </p>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={onAskQuestion}
-          >
-            <PlusIcon size={14} /> Ask a question about your loans
-          </button>
         </div>
       </section>
     </>
