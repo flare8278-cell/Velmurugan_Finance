@@ -8,7 +8,8 @@ export type Page =
   | 'questions'
   | 'wallet'
   | 'reports'
-  | 'settings';
+  | 'settings'
+  | 'profile';
 
 export type Profile = {
   role: 'owner' | 'client';
@@ -25,6 +26,7 @@ export type Client = {
   customer_code: string;
   name: string;
   phone: string;
+  alternate_phone?: string;
   address: string;
   work: string;
   auth_user_id: string | null;

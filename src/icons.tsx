@@ -315,6 +315,8 @@ export function PageIcon({page, size = 18, className}: {page: Page; size?: numbe
       return <ReportsIcon size={size} className={className} />;
     case 'settings':
       return <SettingsIcon size={size} className={className} />;
+    case 'profile':
+      return <UserIcon size={size} className={className} />;
     default:
       return <OverviewIcon size={size} className={className} />;
   }

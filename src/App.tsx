@@ -2,11 +2,14 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import type {FormEvent, ReactNode} from 'react';
 import {Login, VerifyEmail, ErrorText} from './Auth';
 import {AdministratorPanel} from './AdministratorPanel';
+import {ClientContactForm} from './ClientContactForm';
 import {api, businessDate, date, logout, money, rpc, supabase} from './api';
 import {VaultPanel, download} from './VaultPanel';
-import {encryptWalletRecord} from './vault';
+import {decryptWalletRecord, encryptWalletRecord} from './vault';
 import {
   PageIcon,
+  OverviewIcon,
+  LoansIcon,
   GiveMoneyIcon,
   GetMoneyIcon,
   ReceiptIcon,
@@ -24,7 +27,18 @@ import {
   ShieldIcon
 } from './icons';
 import {generateDocxArchive, downloadDocx} from './docxArchive';
-import type {Client, Loan, Payment, Profile, Question, VaultRow, Workspace, Page} from './types';
+import type {
+  Client,
+  Loan,
+  Payment,
+  Profile,
+  Question,
+  Message,
+  VaultItem,
+  VaultRow,
+  Workspace,
+  Page
+} from './types';
 
 type Modal =
   | 'client'
@@ -47,7 +61,8 @@ const labels: Record<Page, string> = {
   questions: 'Questions',
   wallet: 'Secret wallet',
   reports: 'Statements',
-  settings: 'Settings & backups'
+  settings: 'Settings & backups',
+  profile: 'Profile'
 };
 
 const empty: Workspace = {
@@ -263,7 +278,7 @@ export default function App() {
   }, [refreshProfile, resetPrivate]);
 
   useEffect(() => {
-    if (profile && !owner && ['clients', 'wallet', 'settings'].includes(page)) {
+    if (profile && !owner && !['overview', 'loans', 'profile'].includes(page)) {
       setPage('overview');
     }
   }, [profile, owner, page]);
@@ -427,13 +442,54 @@ export default function App() {
         const c = data.clients.find(c => c.id === chosenClient);
         if (!c) throw Error('Client not found.');
         const password = String(f.get('password'));
-        const record = {
+
+        const {data: existingItem, error: readError} = await supabase
+          .from('finance_vault_items')
+          .select('client_id,envelope')
+          .eq('client_id', c.id)
+          .maybeSingle();
+        if (readError) throw Error(readError.message);
+
+        let existingRecord: Record<string, unknown> = {};
+        if (existingItem) {
+          let decrypted: unknown;
+          try {
+            decrypted = await decryptWalletRecord(
+              vaultKey,
+              c.id,
+              (existingItem as VaultItem).envelope
+            );
+          } catch {
+            throw Error(
+              'Could not decrypt existing wallet record for this client. Password setup aborted to preserve existing notes.'
+            );
+          }
+          if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
+            throw Error(
+              'Existing wallet record format is invalid. Password setup aborted to preserve existing notes.'
+            );
+          }
+          existingRecord = decrypted as Record<string, unknown>;
+        }
+
+        const submittedNotes = String(f.get('notes') || '');
+        const priorNotes =
+          typeof existingRecord.notes === 'string' ? existingRecord.notes : '';
+        const notes = submittedNotes.trim() ? submittedNotes : priorNotes;
+        const altPhone = c.alternate_phone || '';
+
+        const record: Record<string, unknown> = {
+          ...existingRecord,
           customer_id: c.customer_code,
           name: c.name,
           phone: c.phone,
+          ...(altPhone || 'alternate_phone' in existingRecord
+            ? {alternate_phone: altPhone}
+            : {}),
           password,
-          notes: String(f.get('notes') || '')
+          notes
         };
+
         await api(c.auth_user_id ? 'reset-client-password' : 'provision-client', {
           client_id: c.id,
           password,
@@ -537,14 +593,15 @@ export default function App() {
         'reports',
         'settings'
       ]
-    : ['overview', 'loans', 'collections', 'questions'];
+    : ['overview', 'loans', 'profile'];
 
   const visibleClients = data.clients.filter(
     c =>
       !search ||
       c.name.toLowerCase().includes(search.toLowerCase()) ||
       c.customer_code.toLowerCase().includes(search.toLowerCase()) ||
-      c.phone.toLowerCase().includes(search.toLowerCase())
+      c.phone.toLowerCase().includes(search.toLowerCase()) ||
+      (c.alternate_phone || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const client = (id: string) => data.clients.find(c => c.id === id);
@@ -615,7 +672,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell ' + (!owner ? 'borrower-shell' : '')}>
       <aside className={'sidebar ' + (mobile ? 'open' : '')}>
         <a
           className="brand"
@@ -643,7 +700,7 @@ export default function App() {
             <small>{owner ? 'Active ledger' : 'Personal view'}</small>
           </div>
         </div>
-        <p className="nav-label">MAIN WORKSPACE</p>
+        <p className="nav-label">{owner ? 'MAIN WORKSPACE' : 'CLIENT PORTAL'}</p>
         <nav>
           {pages.map(p => (
             <button
@@ -656,15 +713,12 @@ export default function App() {
                 setReceipt(null);
                 setSearch('');
               }}
+              aria-current={page === p ? 'page' : undefined}
             >
               <span>
                 <PageIcon page={p} size={18} />
               </span>
-              {!owner && p === 'overview'
-                ? 'My account'
-                : !owner && p === 'collections'
-                ? 'Payment history'
-                : labels[p]}
+              {!owner && p === 'overview' ? 'Home' : labels[p]}
             </button>
           ))}
         </nav>
@@ -704,7 +758,7 @@ export default function App() {
             ☰
           </button>
           <div>
-            Workspace <span>/ {labels[page]}</span>
+            Workspace <span>/ {!owner && page === 'overview' ? 'Home' : labels[page]}</span>
           </div>
           <div className="topbar-actions">
             <span className="date-label">{date(businessDate())}</span>
@@ -759,17 +813,13 @@ export default function App() {
           ) : (
             <>
               {page === 'overview' && (
-                <>
-                  <PageIntro
-                    eyebrow={owner ? 'YOUR BUSINESS, AT A GLANCE' : 'YOUR ACCOUNT, IN VIEW'}
-                    title={
-                      owner
-                        ? 'Good to see you.'
-                        : 'Hello, ' + (data.clients[0]?.name.split(' ')[0] || 'there') + '.'
-                    }
-                    subtitle="Your loans, payments and next steps in one place."
-                    actions={
-                      owner ? (
+                owner ? (
+                  <>
+                    <PageIntro
+                      eyebrow="YOUR BUSINESS, AT A GLANCE"
+                      title="Good to see you."
+                      subtitle="Your loans, payments and next steps in one place."
+                      actions={
                         <>
                           <button
                             type="button"
@@ -786,67 +836,59 @@ export default function App() {
                             <GiveMoneyIcon size={15} /> Give money
                           </button>
                         </>
-                      ) : null
-                    }
-                  />
-                  <section className="welcome-banner">
-                    <p className="eyebrow">YOUR FINANCE, IN HARMONY</p>
-                    <h2>
-                      A clear picture.
-                      <br />
-                      <em>A confident next step.</em>
-                    </h2>
-                    <p>
-                      {owner
-                        ? 'Keep every client’s financial journey organised. Your records are saved securely in Supabase.'
-                        : 'Know your remaining capital, interest and payment history, wherever you are.'}
-                    </p>
-                    <span aria-hidden="true">₹</span>
-                  </section>
-                  <div className="stats">
-                    <Stat
-                      label="Capital remaining"
-                      value={money(totals.capital)}
-                      hint="After principal repayments · Click to view loans"
-                      feature
-                      onClick={() => setPage('loans')}
-                    />
-                    <Stat
-                      label="Unpaid interest"
-                      value={money(totals.interest)}
-                      hint="Posted charges less payments · Click for collections"
-                      onClick={() => setPage('collections')}
-                    />
-                    <Stat
-                      label="Next interest estimate"
-                      value={money(totals.monthly)}
-                      hint="At current capital and rates · Click for statements"
-                      onClick={() => setPage('reports')}
-                    />
-                    <Stat
-                      label={owner ? 'Clients' : 'Your loans'}
-                      value={String(owner ? data.clients.length : data.loans.length)}
-                      hint={
-                        owner
-                          ? 'Individual client records · Click to view clients'
-                          : 'Separate rates and due dates · Click to view loans'
                       }
-                      onClick={() => setPage(owner ? 'clients' : 'loans')}
                     />
-                  </div>
-                  <div className="dashboard-grid">
-                    <section className="panel">
-                      <div className="panel-head">
-                        <h2>{owner ? 'Client accounts' : 'Your loans'}</h2>
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => setPage(owner ? 'clients' : 'loans')}
-                        >
-                          View all <ChevronRightIcon size={13} />
-                        </button>
-                      </div>
-                      {owner ? (
+                    <section className="welcome-banner">
+                      <p className="eyebrow">YOUR FINANCE, IN HARMONY</p>
+                      <h2>
+                        A clear picture.
+                        <br />
+                        <em>A confident next step.</em>
+                      </h2>
+                      <p>
+                        Keep every client’s financial journey organised. Your records are saved securely in Supabase.
+                      </p>
+                      <span aria-hidden="true">₹</span>
+                    </section>
+                    <div className="stats">
+                      <Stat
+                        label="Capital remaining"
+                        value={money(totals.capital)}
+                        hint="After principal repayments · Click to view loans"
+                        feature
+                        onClick={() => setPage('loans')}
+                      />
+                      <Stat
+                        label="Unpaid interest"
+                        value={money(totals.interest)}
+                        hint="Posted charges less payments · Click for collections"
+                        onClick={() => setPage('collections')}
+                      />
+                      <Stat
+                        label="Next interest estimate"
+                        value={money(totals.monthly)}
+                        hint="At current capital and rates · Click for statements"
+                        onClick={() => setPage('reports')}
+                      />
+                      <Stat
+                        label="Clients"
+                        value={String(data.clients.length)}
+                        hint="Individual client records · Click to view clients"
+                        onClick={() => setPage('clients')}
+                      />
+                    </div>
+                    <div className="dashboard-grid">
+                      <section className="panel">
+                        <div className="panel-head">
+                          <h2>Client accounts</h2>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => setPage('clients')}
+                          >
+                            View all <ChevronRightIcon size={13} />
+                          </button>
+                        </div>
                         <ClientTable
                           clients={data.clients.slice(0, 5)}
                           loans={data.loans}
@@ -856,54 +898,46 @@ export default function App() {
                           }}
                           onDetail={c => openDetail(c)}
                         />
-                      ) : (
-                        <LoanCards
-                          loans={data.loans}
-                          clients={data.clients}
-                          owner={false}
-                          onPayment={() => {}}
-                        />
-                      )}
-                    </section>
-                    <section className="panel">
-                      <div className="panel-head">
-                        <h2>Your next steps</h2>
-                      </div>
-                      <div className="panel-body steps">
-                        {owner ? (
-                          <>
-                            <p>
-                              <b>01</b>Create a client and their loans.
-                            </p>
-                            <p>
-                              <b>02</b>Set up your encrypted secret wallet.
-                            </p>
-                            <p>
-                              <b>03</b>Create the client’s ID and password.
-                            </p>
-                            <p>
-                              <b>04</b>Record repayments and reconcile balances.
-                            </p>
-                          </>
-                        ) : (
-                          <>
-                            <p>Payments clear unpaid interest first, then capital.</p>
-                            <p>Your first interest is due at the end of the month after borrowing.</p>
-                            <p>No additional late penalty is applied to these loans.</p>
-                          </>
-                        )}
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => setPage(owner ? 'wallet' : 'questions')}
-                        >
-                          {owner ? 'Open secret wallet' : 'Ask a question'}{' '}
-                          <ChevronRightIcon size={13} />
-                        </button>
-                      </div>
-                    </section>
-                  </div>
-                </>
+                      </section>
+                      <section className="panel">
+                        <div className="panel-head">
+                          <h2>Your next steps</h2>
+                        </div>
+                        <div className="panel-body steps">
+                          <p>
+                            <b>01</b>Create a client and their loans.
+                          </p>
+                          <p>
+                            <b>02</b>Set up your encrypted secret wallet.
+                          </p>
+                          <p>
+                            <b>03</b>Create the client’s ID and password.
+                          </p>
+                          <p>
+                            <b>04</b>Record repayments and reconcile balances.
+                          </p>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => setPage('wallet')}
+                          >
+                            Open secret wallet <ChevronRightIcon size={13} />
+                          </button>
+                        </div>
+                      </section>
+                    </div>
+                  </>
+                ) : (
+                  <BorrowerHomeView
+                    borrower={data.clients[0]}
+                    loans={data.loans}
+                    payments={data.payments}
+                    totals={totals}
+                    onNavigate={setPage}
+                    onReceipt={setReceipt}
+                    onAskQuestion={() => open('question')}
+                  />
+                )
               )}
               {page === 'clients' && owner && (
                 <>
@@ -984,6 +1018,19 @@ export default function App() {
                                 ) : (
                                   <small>Phone not provided</small>
                                 )}
+                                {c.alternate_phone && (
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 6,
+                                      marginTop: 4
+                                    }}
+                                  >
+                                    <small>Alt: {c.alternate_phone}</small>
+                                    <CopyButton text={c.alternate_phone} label="Alt phone" />
+                                  </div>
+                                )}
                               </td>
                               <td>
                                 <span className={'badge ' + (!c.auth_user_id ? 'warm' : '')}>
@@ -1059,13 +1106,13 @@ export default function App() {
                 </>
               )}
               {page === 'loans' && (
-                <>
-                  <PageIntro
-                    eyebrow={owner ? 'CAPITAL & TERMS' : 'YOUR LOAN BALANCES'}
-                    title={owner ? 'Active loans.' : 'Your loans.'}
-                    subtitle="Interest is simple and accrued monthly on the remaining principal."
-                    actions={
-                      owner ? (
+                owner ? (
+                  <>
+                    <PageIntro
+                      eyebrow="CAPITAL & TERMS"
+                      title="Active loans."
+                      subtitle="Interest is simple and accrued monthly on the remaining principal."
+                      actions={
                         <button
                           type="button"
                           className="button primary"
@@ -1073,10 +1120,8 @@ export default function App() {
                         >
                           <GiveMoneyIcon size={15} /> Give money
                         </button>
-                      ) : null
-                    }
-                  />
-                  {owner && (
+                      }
+                    />
                     <div className="filter-group">
                       <label htmlFor="loans-client-select" className="filter">
                         Client
@@ -1094,38 +1139,43 @@ export default function App() {
                         ))}
                       </select>
                     </div>
-                  )}
-                  <LoanCards
-                    loans={data.loans.filter(
-                      l => !chosenClient || l.client_id === chosenClient
-                    )}
-                    clients={data.clients}
-                    owner={owner}
-                    onPayment={l => open('payment', l.client_id, l.id)}
-                    onEditRate={l => {
-                      setChosenClient(l.client_id);
-                      setChosenLoan(l.id);
-                      setModal('edit_loan');
-                    }}
+                    <LoanCards
+                      loans={data.loans.filter(
+                        l => !chosenClient || l.client_id === chosenClient
+                      )}
+                      clients={data.clients}
+                      owner={owner}
+                      onPayment={l => open('payment', l.client_id, l.id)}
+                      onEditRate={l => {
+                        setChosenClient(l.client_id);
+                        setChosenLoan(l.id);
+                        setModal('edit_loan');
+                      }}
+                    />
+                  </>
+                ) : (
+                  <BorrowerLoansView
+                    loans={data.loans}
+                    payments={data.payments}
+                    onReceipt={setReceipt}
+                    onAskQuestion={() => open('question')}
                   />
-                </>
+                )
               )}
-              {page === 'collections' && (
+              {page === 'collections' && owner && (
                 <>
                   <PageIntro
                     eyebrow="EVERY PAYMENT ACCOUNTED FOR"
-                    title={owner ? 'Your collections.' : 'Payment history.'}
+                    title="Your collections."
                     subtitle="Interest and principal are recorded separately on every receipt."
                     actions={
-                      owner ? (
-                        <button
-                          type="button"
-                          className="button primary"
-                          onClick={() => open('payment')}
-                        >
-                          <GetMoneyIcon size={15} /> Get money
-                        </button>
-                      ) : null
+                      <button
+                        type="button"
+                        className="button primary"
+                        onClick={() => open('payment')}
+                      >
+                        <GetMoneyIcon size={15} /> Get money
+                      </button>
                     }
                   />
                   <div className="stats">
@@ -1157,7 +1207,7 @@ export default function App() {
                   </section>
                 </>
               )}
-              {page === 'questions' && (
+              {page === 'questions' && owner && (
                 <>
                   <PageIntro
                     eyebrow="CLEAR QUESTIONS, CLEAR ANSWERS"
@@ -1173,132 +1223,31 @@ export default function App() {
                       </button>
                     }
                   />
-                  <div className="questions-layout">
-                    <section className="panel thread-list">
-                      <div className="panel-head">
-                        <h2>All threads</h2>
-                      </div>
-                      {!data.queries.length ? (
-                        <p className="empty">No questions asked yet.</p>
-                      ) : (
-                        data.queries.map(q => (
-                          <button
-                            type="button"
-                            key={q.id}
-                            className={
-                              'thread-item ' +
-                              (thread === q.id || (!thread && data.queries[0]?.id === q.id)
-                                ? 'active'
-                                : '')
-                            }
-                            onClick={() => setThread(q.id)}
-                          >
-                            <strong>{q.subject}</strong>
-                            <small>
-                              {client(q.client_id)?.name} · {date(q.created_at)}
-                            </small>
-                            <span className={'badge ' + (q.status === 'open' ? 'warm' : '')}>
-                              {q.status}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </section>
-                    <section className="panel thread-view">
-                      {(() => {
-                        const current =
-                          data.queries.find(q => q.id === thread) || data.queries[0];
-                        if (!current)
-                          return <p className="empty">Select a thread to view messages.</p>;
-                        const messages = data.messages.filter(m => m.query_id === current.id);
-                        return (
-                          <>
-                            <div className="panel-head">
-                              <div>
-                                <h2>{current.subject}</h2>
-                                <small>
-                                  {client(current.client_id)?.name} · Started{' '}
-                                  {date(current.created_at)}
-                                </small>
-                              </div>
-                              {owner && current.status === 'open' && (
-                                <button
-                                  type="button"
-                                  className="button secondary small"
-                                  onClick={async () => {
-                                    try {
-                                      await rpc('finance_resolve_question', {
-                                        p_query: current.id
-                                      });
-                                      await reload();
-                                      notify('Question marked resolved.');
-                                    } catch (e) {
-                                      notify(errorMessage(e));
-                                    }
-                                  }}
-                                >
-                                  Mark resolved
-                                </button>
-                              )}
-                            </div>
-                            <div className="thread-body">
-                              {messages.map(m => (
-                                <div
-                                  key={m.id}
-                                  className={
-                                    'message ' +
-                                    (m.author === 'owner' ? 'from-owner' : 'from-client')
-                                  }
-                                >
-                                  <small>
-                                    {m.author === 'owner'
-                                      ? 'Financer'
-                                      : client(current.client_id)?.name || 'Client'}{' '}
-                                    · {date(m.created_at)}
-                                  </small>
-                                  <p>{m.body}</p>
-                                </div>
-                              ))}
-                              {current.status === 'open' ? (
-                                <form
-                                  className="reply-form"
-                                  onSubmit={async e => {
-                                    e.preventDefault();
-                                    const form = e.currentTarget;
-                                    const body = String(new FormData(form).get('reply'));
-                                    if (!body.trim()) return;
-                                    try {
-                                      await rpc('finance_reply_question', {
-                                        p_query: current.id,
-                                        p_body: body
-                                      });
-                                      form.reset();
-                                      await reload();
-                                    } catch (err) {
-                                      notify(errorMessage(err));
-                                    }
-                                  }}
-                                >
-                                  <textarea
-                                    name="reply"
-                                    placeholder="Write a clear reply…"
-                                    required
-                                    maxLength={4000}
-                                  />
-                                  <button type="submit" className="button primary">
-                                    Send reply <ArrowRightIcon size={14} />
-                                  </button>
-                                </form>
-                              ) : (
-                                <p className="fine">This question has been marked resolved.</p>
-                              )}
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </section>
-                  </div>
+                  <QuestionThreads
+                    queries={data.queries}
+                    messages={data.messages}
+                    clients={data.clients}
+                    activeThreadId={thread}
+                    onSelectThread={setThread}
+                    owner={true}
+                    onReload={reload}
+                    notify={notify}
+                    onAskQuestion={() => open('question')}
+                  />
                 </>
+              )}
+              {page === 'profile' && !owner && (
+                <BorrowerProfileView
+                  borrower={data.clients[0]}
+                  queries={data.queries}
+                  messages={data.messages}
+                  clients={data.clients}
+                  activeThreadId={thread}
+                  onSelectThread={setThread}
+                  onReload={reload}
+                  notify={notify}
+                  onAskQuestion={() => open('question')}
+                />
               )}
               {page === 'wallet' && owner && (
                 <VaultPanel
@@ -1310,7 +1259,7 @@ export default function App() {
                   onChanged={reload}
                 />
               )}
-              {page === 'reports' && (
+              {page === 'reports' && owner && (
                 <>
                   <PageIntro
                     eyebrow="STATEMENTS & REPORTS"
@@ -1563,20 +1512,24 @@ export default function App() {
           }}
         >
           {modal === 'client_detail' && activeClient ? (
+            (() => {
+              const detailClient =
+                data.clients.find(item => item.id === activeClient.id) || activeClient;
+              return (
             <div className="client-detail-panel">
               <div className="client-detail-header">
                 <div className="client-detail-identity">
-                  <span className="avatar gold-avatar">{activeClient.name[0]}</span>
+                  <span className="avatar gold-avatar">{detailClient.name[0]}</span>
                   <div>
                     <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
-                      <h3>{activeClient.name}</h3>
+                      <h3>{detailClient.name}</h3>
                       {owner && (
                         <button
                           type="button"
                           className="button secondary small"
                           style={{padding: '3px 8px', fontSize: 11}}
                           onClick={() => {
-                            setChosenClient(activeClient.id);
+                            setChosenClient(detailClient.id);
                             setModal('edit_client');
                           }}
                         >
@@ -1586,28 +1539,40 @@ export default function App() {
                     </div>
                     <div className="client-detail-chips">
                       <span className="pill account-code">
-                        ID: {activeClient.customer_code}
+                        ID: {detailClient.customer_code}
                       </span>
-                      <CopyButton text={activeClient.customer_code} label="ID" />
-                      {activeClient.phone && (
+                      <CopyButton text={detailClient.customer_code} label="ID" />
+                      {detailClient.phone && (
                         <>
                           <a
-                            href={'tel:' + activeClient.phone}
+                            href={'tel:' + detailClient.phone}
                             className="pill phone-link"
                             title="Call client"
                           >
-                            <PhoneIcon size={12} /> {activeClient.phone}
+                            <PhoneIcon size={12} /> {detailClient.phone}
                           </a>
-                          <CopyButton text={activeClient.phone} label="Phone" />
+                          <CopyButton text={detailClient.phone} label="Phone" />
                         </>
                       )}
-                      <span className={'badge ' + (activeClient.active ? '' : 'warm')}>
-                        {activeClient.active ? 'Active' : 'Disabled'}
+                      {detailClient.alternate_phone && (
+                        <>
+                          <a
+                            href={'tel:' + detailClient.alternate_phone}
+                            className="pill phone-link"
+                            title="Call alternate phone"
+                          >
+                            <PhoneIcon size={12} /> Alt: {detailClient.alternate_phone}
+                          </a>
+                          <CopyButton text={detailClient.alternate_phone} label="Alt phone" />
+                        </>
+                      )}
+                      <span className={'badge ' + (detailClient.active ? '' : 'warm')}>
+                        {detailClient.active ? 'Active' : 'Disabled'}
                       </span>
                       <span
-                        className={'badge ' + (activeClient.auth_user_id ? '' : 'warm')}
+                        className={'badge ' + (detailClient.auth_user_id ? '' : 'warm')}
                       >
-                        {activeClient.auth_user_id ? 'Login Created' : 'No Login'}
+                        {detailClient.auth_user_id ? 'Login Created' : 'No Login'}
                       </span>
                     </div>
                   </div>
@@ -1618,7 +1583,7 @@ export default function App() {
               <div className="client-detail-stats">
                 {(() => {
                   const clientLoans = data.loans.filter(
-                    l => l.client_id === activeClient.id
+                    l => l.client_id === detailClient.id
                   );
                   const clientPayments = data.payments.filter(p =>
                     clientLoans.some(l => l.id === p.loan_id)
@@ -1673,7 +1638,9 @@ export default function App() {
 
               <div
                 style={{
-                  background: '#f8faf9',
+                  background: '#0f1d2e',
+                  border: '1px solid rgba(56, 189, 248, 0.18)',
+                  color: '#f0f6fc',
                   padding: '12px 14px',
                   borderRadius: 'var(--radius-sm)',
                   fontSize: 13,
@@ -1682,13 +1649,19 @@ export default function App() {
                 }}
               >
                 <p>
-                  <strong>Address:</strong> {activeClient.address || 'Address not recorded'}
+                  <strong>Primary Phone:</strong> {detailClient.phone || 'Not provided'}
                 </p>
                 <p>
-                  <strong>Work / Occupation:</strong> {activeClient.work || 'Not specified'}
+                  <strong>Alternate Phone:</strong> {detailClient.alternate_phone || 'Not provided'}
                 </p>
                 <p>
-                  <strong>Client Since:</strong> {date(activeClient.created_at)}
+                  <strong>Address:</strong> {detailClient.address || 'Address not recorded'}
+                </p>
+                <p>
+                  <strong>Work / Occupation:</strong> {detailClient.work || 'Not specified'}
+                </p>
+                <p>
+                  <strong>Client Since:</strong> {date(detailClient.created_at)}
                 </p>
               </div>
 
@@ -1899,6 +1872,8 @@ export default function App() {
                 </div>
               )}
             </div>
+              );
+            })()
           ) : modal === 'credentials' && !vaultKey ? (
             vaultRow ? (
               <VaultPanel
@@ -2375,12 +2350,12 @@ export default function App() {
                     Private notes for this client
                     <textarea
                       name="notes"
-                      placeholder="e.g. Identity documents, guarantor details…"
+                      placeholder="Leave blank to keep existing wallet notes, or enter notes (e.g. Identity documents, guarantor details…)"
                       maxLength={20000}
                     />
                   </label>
                   <p className="fine">
-                    Your financer wallet password never leaves your browser.
+                    Your financer wallet password never leaves your browser. Leaving private notes blank preserves any existing notes saved in the secret wallet.
                   </p>
                 </>
               )}
@@ -2461,6 +2436,50 @@ export default function App() {
             </button>
           </div>
         </ModalFrame>
+      )}
+
+      {!owner && (
+        <nav className="borrower-bottom-nav" aria-label="Borrower Navigation">
+          <button
+            type="button"
+            className={'bottom-nav-item ' + (page === 'overview' ? 'active' : '')}
+            onClick={() => {
+              setPage('overview');
+              setReceipt(null);
+              window.scrollTo({top: 0, behavior: 'smooth'});
+            }}
+            aria-current={page === 'overview' ? 'page' : undefined}
+          >
+            <OverviewIcon size={20} />
+            <span>Home</span>
+          </button>
+          <button
+            type="button"
+            className={'bottom-nav-item ' + (page === 'loans' ? 'active' : '')}
+            onClick={() => {
+              setPage('loans');
+              setReceipt(null);
+              window.scrollTo({top: 0, behavior: 'smooth'});
+            }}
+            aria-current={page === 'loans' ? 'page' : undefined}
+          >
+            <LoansIcon size={20} />
+            <span>Loans</span>
+          </button>
+          <button
+            type="button"
+            className={'bottom-nav-item ' + (page === 'profile' ? 'active' : '')}
+            onClick={() => {
+              setPage('profile');
+              setReceipt(null);
+              window.scrollTo({top: 0, behavior: 'smooth'});
+            }}
+            aria-current={page === 'profile' ? 'page' : undefined}
+          >
+            <UserIcon size={20} />
+            <span>Profile</span>
+          </button>
+        </nav>
       )}
     </div>
   );
@@ -2751,5 +2770,805 @@ function ModalFrame({
       </div>
       <div className="modal-body">{children}</div>
     </dialog>
+  );
+}
+
+function QuestionThreads({
+  queries,
+  messages,
+  clients,
+  activeThreadId,
+  onSelectThread,
+  owner,
+  onReload,
+  notify,
+  onAskQuestion
+}: {
+  queries: Question[];
+  messages: Message[];
+  clients: Client[];
+  activeThreadId: string;
+  onSelectThread: (id: string) => void;
+  owner: boolean;
+  onReload: () => Promise<void>;
+  notify: (msg: string) => void;
+  onAskQuestion?: () => void;
+}) {
+  const current = queries.find(q => q.id === activeThreadId) || queries[0];
+  const client = (id: string) => clients.find(c => c.id === id);
+  const threadMessages = current ? messages.filter(m => m.query_id === current.id) : [];
+
+  return (
+    <div className="questions-layout">
+      <section className="panel thread-list">
+        <div className="panel-head">
+          <h2>All threads</h2>
+        </div>
+        {!queries.length ? (
+          <p className="empty">No questions asked yet.</p>
+        ) : (
+          queries.map(q => (
+            <button
+              type="button"
+              key={q.id}
+              className={
+                'thread-item ' +
+                (current?.id === q.id ? 'active' : '')
+              }
+              onClick={() => onSelectThread(q.id)}
+            >
+              <strong>{q.subject}</strong>
+              <small>
+                {client(q.client_id)?.name || 'Client'} · {date(q.created_at)}
+              </small>
+              <span className={'badge ' + (q.status === 'open' ? 'warm' : '')}>
+                {q.status}
+              </span>
+            </button>
+          ))
+        )}
+      </section>
+      <section className="panel thread-view">
+        {!current ? (
+          <div className="panel-body">
+            <p className="empty">Select a thread to view messages.</p>
+            {onAskQuestion && (
+              <button
+                type="button"
+                className="button primary"
+                onClick={onAskQuestion}
+                style={{marginTop: 12}}
+              >
+                <PlusIcon size={14} /> Ask a question
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="panel-head">
+              <div>
+                <h2>{current.subject}</h2>
+                <small>
+                  {client(current.client_id)?.name || 'Client'} · Started{' '}
+                  {date(current.created_at)}
+                </small>
+              </div>
+              {owner && current.status === 'open' && (
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={async () => {
+                    try {
+                      await rpc('finance_resolve_question', {
+                        p_query: current.id
+                      });
+                      await onReload();
+                      notify('Question marked resolved.');
+                    } catch (e) {
+                      notify(errorMessage(e));
+                    }
+                  }}
+                >
+                  Mark resolved
+                </button>
+              )}
+            </div>
+            <div className="thread-body">
+              {threadMessages.map(m => (
+                <div
+                  key={m.id}
+                  className={
+                    'message ' +
+                    (m.author === 'owner' ? 'from-owner' : 'from-client')
+                  }
+                >
+                  <small>
+                    {m.author === 'owner'
+                      ? 'Financer'
+                      : client(current.client_id)?.name || 'Client'}{' '}
+                    · {date(m.created_at)}
+                  </small>
+                  <p>{m.body}</p>
+                </div>
+              ))}
+              {current.status === 'open' ? (
+                <form
+                  className="reply-form"
+                  onSubmit={async e => {
+                    e.preventDefault();
+                    const form = e.currentTarget;
+                    const body = String(new FormData(form).get('reply'));
+                    if (!body.trim()) return;
+                    try {
+                      await rpc('finance_reply_question', {
+                        p_query: current.id,
+                        p_body: body
+                      });
+                      form.reset();
+                      await onReload();
+                    } catch (err) {
+                      notify(errorMessage(err));
+                    }
+                  }}
+                >
+                  <textarea
+                    name="reply"
+                    placeholder="Write a clear reply…"
+                    required
+                    maxLength={4000}
+                  />
+                  <button type="submit" className="button primary">
+                    Send reply <ArrowRightIcon size={14} />
+                  </button>
+                </form>
+              ) : (
+                <p className="fine">This question has been marked resolved.</p>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function BorrowerHomeView({
+  borrower,
+  loans,
+  payments,
+  totals,
+  onNavigate,
+  onReceipt,
+  onAskQuestion
+}: {
+  borrower?: Client;
+  loans: Loan[];
+  payments: Payment[];
+  totals: {capital: number; interest: number; monthly: number};
+  onNavigate: (page: Page) => void;
+  onReceipt: (payment: Payment) => void;
+  onAskQuestion: () => void;
+}) {
+  const overdueLoans = loans.filter(l => Number(l.balance.interest) > 0);
+  const overdueCount = overdueLoans.length;
+  const overdueAmount = overdueLoans.reduce(
+    (sum, l) => sum + Number(l.balance.interest),
+    0
+  );
+  const totalBalance = totals.capital + totals.interest;
+  const recentPayments = payments.slice(0, 5);
+
+  return (
+    <>
+      <PageIntro
+        eyebrow="YOUR ACCOUNT, AT A GLANCE"
+        title={'Hello, ' + (borrower?.name.split(' ')[0] || 'there') + '.'}
+        subtitle="Your active loans, monthly interest status, and payment receipts."
+        actions={
+          <button
+            type="button"
+            className="button secondary"
+            onClick={onAskQuestion}
+          >
+            <PlusIcon size={14} /> Ask a question
+          </button>
+        }
+      />
+
+      {overdueCount > 0 ? (
+        <section className="borrower-hero-card overdue">
+          <div className="borrower-hero-top">
+            <div className="borrower-hero-badge overdue">
+              <span className="hero-badge-dot" /> Overdue Posted Monthly Interest
+            </div>
+            <span className="borrower-hero-counter">
+              {overdueCount} {overdueCount === 1 ? 'loan has' : 'loans have'} unpaid interest
+            </span>
+          </div>
+          <div className="borrower-hero-amount-block">
+            <strong className="borrower-hero-val">{money(overdueAmount)}</strong>
+            <span className="borrower-hero-label">Total posted unpaid interest</span>
+          </div>
+          <p className="borrower-hero-desc">
+            Simple interest is accrued monthly on remaining principal. Under our payment rules, your repayments automatically clear all posted unpaid interest before reducing capital.
+          </p>
+          <div className="borrower-hero-actions">
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => onNavigate('loans')}
+            >
+              View loans & monthly detail <ChevronRightIcon size={13} />
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onAskQuestion}
+            >
+              Ask financer about balance
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="borrower-hero-card clear">
+          <div className="borrower-hero-top">
+            <div className="borrower-hero-badge clear">
+              <CheckIcon size={14} /> All Monthly Interest Cleared
+            </div>
+            <span className="borrower-hero-counter">0 overdue charges</span>
+          </div>
+          <div className="borrower-hero-amount-block">
+            <strong className="borrower-hero-val">{money(0)}</strong>
+            <span className="borrower-hero-label">No posted unpaid interest</span>
+          </div>
+          <p className="borrower-hero-desc">
+            All posted monthly interest charges are completely up to date. Next interest will accrue on your scheduled due date.
+          </p>
+        </section>
+      )}
+
+      <div className="stats">
+        <Stat
+          label="Remaining capital"
+          value={money(totals.capital)}
+          hint="Outstanding principal · Click to view loans"
+          feature
+          onClick={() => onNavigate('loans')}
+        />
+        <Stat
+          label="Posted unpaid interest"
+          value={money(totals.interest)}
+          hint={
+            overdueCount > 0
+              ? `${overdueCount} loan(s) pending settlement`
+              : 'All interest settled to date'
+          }
+          onClick={() => onNavigate('loans')}
+        />
+        <Stat
+          label="Total outstanding balance"
+          value={money(totalBalance)}
+          hint="Principal plus unpaid interest"
+          onClick={() => onNavigate('loans')}
+        />
+        <Stat
+          label="Active loans"
+          value={String(loans.length)}
+          hint="Click to inspect monthly rate breakdown"
+          onClick={() => onNavigate('loans')}
+        />
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Your active loans</h2>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => onNavigate('loans')}
+            >
+              View details <ChevronRightIcon size={13} />
+            </button>
+          </div>
+          <div className="borrower-loan-list">
+            {loans.map(l => (
+              <div
+                key={l.id}
+                className="borrower-loan-item"
+                onClick={() => onNavigate('loans')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onNavigate('loans');
+                  }
+                }}
+              >
+                <div className="borrower-loan-item-head">
+                  <strong>Loan #{l.id.slice(0, 8).toUpperCase()}</strong>
+                  <span
+                    className={
+                      'badge ' + (Number(l.balance.interest) > 0 ? 'warm' : '')
+                    }
+                  >
+                    {Number(l.balance.total) === 0
+                      ? 'Settled'
+                      : Number(l.balance.interest) > 0
+                      ? 'Interest unpaid'
+                      : 'Active'}
+                  </span>
+                </div>
+                <div className="borrower-loan-item-metrics">
+                  <div>
+                    <small>Capital remaining</small>
+                    <strong>{money(l.balance.principal)}</strong>
+                  </div>
+                  <div>
+                    <small>Monthly rate</small>
+                    <strong>{l.monthly_rate}%</strong>
+                  </div>
+                  <div>
+                    <small>Unpaid interest</small>
+                    <strong
+                      style={{
+                        color:
+                          Number(l.balance.interest) > 0
+                            ? 'var(--gold-text)'
+                            : 'inherit'
+                      }}
+                    >
+                      {money(l.balance.interest)}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!loans.length && <p className="empty">No active loans found.</p>}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Recent payment receipts</h2>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => onNavigate('loans')}
+            >
+              All receipts <ChevronRightIcon size={13} />
+            </button>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Receipt / Date</th>
+                  <th>Amount</th>
+                  <th>Interest</th>
+                  <th>Capital</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentPayments.map(p => (
+                  <tr key={p.id}>
+                    <td>
+                      <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
+                      <small>{date(p.paid_on)} · {p.method}</small>
+                    </td>
+                    <td>{money(p.amount)}</td>
+                    <td>{money(p.interest_paid)}</td>
+                    <td>{money(p.principal_paid)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => onReceipt(p)}
+                      >
+                        <ReceiptIcon size={13} /> Receipt
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!recentPayments.length && (
+              <p className="empty">No payment receipts recorded yet.</p>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div className="borrower-notice-card">
+        <div className="notice-icon">ℹ️</div>
+        <div className="notice-content">
+          <strong>Installment Calculations & Schedule Specifications</strong>
+          <p>
+            Installment calculation structures, amortization schedules, and borrower identity document uploads await user specifications. All loans currently operate under standard simple monthly interest with interest cleared prior to capital reduction.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function BorrowerLoansView({
+  loans,
+  payments,
+  onReceipt,
+  onAskQuestion
+}: {
+  loans: Loan[];
+  payments: Payment[];
+  onReceipt: (payment: Payment) => void;
+  onAskQuestion: () => void;
+}) {
+  const totalOriginal = loans.reduce(
+    (acc, l) => acc + Number(l.original_principal),
+    0
+  );
+  const totalPrincipal = loans.reduce(
+    (acc, l) => acc + Number(l.balance.principal),
+    0
+  );
+  const totalInterest = loans.reduce(
+    (acc, l) => acc + Number(l.balance.interest),
+    0
+  );
+  const totalPaid = payments.reduce((acc, p) => acc + Number(p.amount), 0);
+
+  return (
+    <>
+      <PageIntro
+        eyebrow="CAPITAL & MONTHLY INTEREST"
+        title="Your loans & payment history."
+        subtitle="Detailed monthly interest rates, capital balance, and official payment receipts."
+        actions={
+          <button
+            type="button"
+            className="button secondary"
+            onClick={onAskQuestion}
+          >
+            <PlusIcon size={14} /> Ask a question
+          </button>
+        }
+      />
+
+      <div className="stats">
+        <Stat label="Total borrowed" value={money(totalOriginal)} />
+        <Stat label="Capital remaining" value={money(totalPrincipal)} feature />
+        <Stat label="Unpaid interest" value={money(totalInterest)} />
+        <Stat label="Total repayments" value={money(totalPaid)} />
+      </div>
+
+      <div className="loan-grid">
+        {loans.map(l => (
+          <article className="loan-card" key={l.id}>
+            <div className="panel-head">
+              <div>
+                <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
+                <small>Disbursed on {date(l.disbursed_on)}</small>
+              </div>
+              <span
+                className={
+                  'badge ' + (Number(l.balance.interest) > 0 ? 'warm' : '')
+                }
+              >
+                {Number(l.balance.total) === 0
+                  ? 'Settled'
+                  : Number(l.balance.interest) > 0
+                  ? 'Interest unpaid'
+                  : 'Active'}
+              </span>
+            </div>
+            <div className="loan-facts">
+              <Fact label="Originally borrowed" value={money(l.original_principal)} />
+              <Fact label="Monthly rate" value={String(l.monthly_rate) + '%'} />
+              <Fact label="Capital remaining" value={money(l.balance.principal)} />
+              <Fact label="Unpaid interest" value={money(l.balance.interest)} />
+              <Fact label="Total outstanding" value={money(l.balance.total)} />
+              <Fact
+                label="Next interest estimate"
+                value={money(
+                  (Number(l.balance.principal) * Number(l.monthly_rate)) / 100
+                )}
+              />
+              <Fact label="Borrowed on" value={date(l.disbursed_on)} />
+              <Fact label="First interest due" value={date(l.first_due_on)} />
+              <Fact
+                label="Next interest due"
+                value={
+                  Number(l.balance.principal) > 0
+                    ? date(l.next_due_on)
+                    : 'No further capital interest'
+                }
+              />
+            </div>
+            <div className="borrower-allocation-note">
+              <strong>Payment Allocation Rule:</strong>
+              <span>
+                {' '}Under monthly_remaining_v1, repayments clear posted unpaid interest first ({money(l.balance.interest)}), then reduce remaining capital.
+              </span>
+            </div>
+          </article>
+        ))}
+        {!loans.length && <p className="empty">No loans found for this account.</p>}
+      </div>
+
+      <section className="panel" style={{marginTop: 24}}>
+        <div className="panel-head">
+          <div>
+            <h2>Official payment receipts</h2>
+            <small>{payments.length} receipts on record</small>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Receipt ID</th>
+                <th>Paid on</th>
+                <th>Amount</th>
+                <th>Interest cleared</th>
+                <th>Capital reduced</th>
+                <th>Method / Reference</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {payments.map(p => (
+                <tr key={p.id}>
+                  <td>
+                    <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
+                    <CopyButton text={p.id} label="ID" />
+                  </td>
+                  <td>{date(p.paid_on)}</td>
+                  <td><strong>{money(p.amount)}</strong></td>
+                  <td>{money(p.interest_paid)}</td>
+                  <td>{money(p.principal_paid)}</td>
+                  <td>{p.method} · {p.reference || '—'}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => onReceipt(p)}
+                    >
+                      <ReceiptIcon size={13} /> Receipt
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!payments.length && (
+            <p className="empty">No payments recorded yet.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="panel" style={{marginTop: 20}}>
+        <div className="panel-head">
+          <h2>Questions regarding your loans?</h2>
+        </div>
+        <div className="panel-body">
+          <p className="muted" style={{marginBottom: 14}}>
+            If you have questions about your monthly interest assessment, principal reduction, or receipt details, you can contact Velmurugan Finance directly.
+          </p>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={onAskQuestion}
+          >
+            <PlusIcon size={14} /> Ask a question about your loans
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function BorrowerProfileView({
+  borrower,
+  queries,
+  messages,
+  clients,
+  activeThreadId,
+  onSelectThread,
+  onReload,
+  notify,
+  onAskQuestion
+}: {
+  borrower?: Client;
+  queries: Question[];
+  messages: Message[];
+  clients: Client[];
+  activeThreadId: string;
+  onSelectThread: (id: string) => void;
+  onReload: () => Promise<void>;
+  notify: (msg: string) => void;
+  onAskQuestion: () => void;
+}) {
+  return (
+    <>
+      <PageIntro
+        eyebrow="BORROWER PROFILE & MESSAGES"
+        title="Profile & communications."
+        subtitle="Your registered borrower records, financer contact details, and direct questions."
+        actions={
+          <button
+            type="button"
+            className="button primary"
+            onClick={onAskQuestion}
+          >
+            <PlusIcon size={14} /> Ask a question
+          </button>
+        }
+      />
+
+      <section className="panel borrower-profile-card">
+        <div className="borrower-profile-header">
+          <div className="borrower-profile-identity">
+            <span className="avatar gold-avatar">
+              {borrower?.name[0] || 'C'}
+            </span>
+            <div>
+              <h3>{borrower?.name || 'Borrower'}</h3>
+              <div className="client-detail-chips">
+                <span className="pill account-code">
+                  ID: {borrower?.customer_code || '—'}
+                </span>
+                {borrower?.customer_code && (
+                  <CopyButton text={borrower.customer_code} label="ID" />
+                )}
+                {borrower?.phone && (
+                  <>
+                    <a
+                      href={'tel:' + borrower.phone}
+                      className="pill phone-link"
+                      title="Call primary phone"
+                    >
+                      <PhoneIcon size={12} /> {borrower.phone}
+                    </a>
+                    <CopyButton text={borrower.phone} label="Phone" />
+                  </>
+                )}
+                {borrower?.alternate_phone && (
+                  <>
+                    <a
+                      href={'tel:' + borrower.alternate_phone}
+                      className="pill phone-link"
+                      title="Call alternate phone"
+                    >
+                      <PhoneIcon size={12} /> Alt: {borrower.alternate_phone}
+                    </a>
+                    <CopyButton text={borrower.alternate_phone} label="Alt phone" />
+                  </>
+                )}
+                <span className={'badge ' + (borrower?.active ? '' : 'warm')}>
+                  {borrower?.active ? 'Active' : 'Disabled'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="borrower-profile-grid">
+          <div className="borrower-profile-field">
+            <small>Full Name</small>
+            <strong>{borrower?.name || '—'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Customer Account ID</small>
+            <strong>{borrower?.customer_code || '—'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Primary Phone Number</small>
+            <strong>{borrower?.phone || 'Not provided'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Alternate Phone Number</small>
+            <strong>{borrower?.alternate_phone || 'Not provided'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Occupation / Work</small>
+            <strong>{borrower?.work || 'Not specified'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Account Status</small>
+            <strong style={{color: '#34d399'}}>Active & Verified</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Registered Address</small>
+            <strong>{borrower?.address || 'Not specified'}</strong>
+          </div>
+          <div className="borrower-profile-field">
+            <small>Account Created</small>
+            <strong>{borrower?.created_at ? date(borrower.created_at) : '—'}</strong>
+          </div>
+        </div>
+
+        {borrower && (
+          <div className="borrower-contact-edit">
+            <div className="borrower-contact-edit-head">
+              <h4>Update contact phone numbers</h4>
+              <p className="fine">
+                Keep a primary mobile number and an optional backup number on file for account reminders.
+              </p>
+            </div>
+            <ClientContactForm
+              phone={borrower.phone || ''}
+              alternatePhone={borrower.alternate_phone || ''}
+              onSaved={async () => {
+                await onReload();
+                notify('Phone numbers saved.');
+              }}
+            />
+          </div>
+        )}
+      </section>
+
+      <div className="borrower-notice-card">
+        <div className="notice-icon">🛡️</div>
+        <div className="notice-content">
+          <strong>Identity Fields & Document Verification</strong>
+          <p>
+            Borrower identity fields, KYC document uploads (e.g. Aadhaar, PAN card, address proofs), and photo capture await user specifications. Your existing records are securely maintained in Velmurugan Finance's protected ledger.
+          </p>
+        </div>
+      </div>
+
+      <section className="panel" style={{marginTop: 20}}>
+        <div className="panel-head">
+          <h2>Financer contact & office</h2>
+        </div>
+        <div className="financer-contact-grid">
+          <div className="contact-item">
+            <small>Lender / Firm</small>
+            <strong>Velmurugan Finance</strong>
+          </div>
+          <div className="contact-item">
+            <small>Primary Contact</small>
+            <strong>Imran (Financer)</strong>
+          </div>
+          <div className="contact-item">
+            <small>Support Email</small>
+            <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
+              <strong>imran5426117@gmail.com</strong>
+              <CopyButton text="imran5426117@gmail.com" label="Email" />
+            </div>
+          </div>
+          <div className="contact-item">
+            <small>Office Location</small>
+            <strong>Salem, Tamil Nadu</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel" style={{marginTop: 20}}>
+        <div className="panel-head">
+          <h2>Inquiries & direct messages</h2>
+          <button
+            type="button"
+            className="button secondary small"
+            onClick={onAskQuestion}
+          >
+            <PlusIcon size={13} /> Ask question
+          </button>
+        </div>
+        <QuestionThreads
+          queries={queries}
+          messages={messages}
+          clients={clients}
+          activeThreadId={activeThreadId}
+          onSelectThread={onSelectThread}
+          owner={false}
+          onReload={onReload}
+          notify={notify}
+          onAskQuestion={onAskQuestion}
+        />
+      </section>
+    </>
   );
 }
