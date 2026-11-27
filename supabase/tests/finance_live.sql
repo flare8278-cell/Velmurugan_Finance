@@ -45,6 +45,12 @@ update public.finance_clients set auth_user_id='00000000-0000-0000-0000-00000000
 update public.finance_clients set auth_user_id='00000000-0000-0000-0000-000000000103' where id=:'c2';
 select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000102","session_id":"00000000-0000-0000-0000-000000000111"}',false);
 set local role authenticated;
+select public.finance_update_own_phones('+91 98765-43210','0123456789');
+do $$ begin
+ if not exists(select 1 from public.finance_clients where id=current_setting('test.live.client')::uuid and phone='+919876543210' and alternate_phone='0123456789') then
+   raise exception 'Client contact numbers were not saved';
+ end if;
+end $$;
 select public.finance_ask_question(:'c1','A payment question','Please check my payment.') as query1 \gset
 select set_config('test.live.query',:'query1',false);
 do $$ declare data jsonb; begin
@@ -58,12 +64,25 @@ reset role;
 delete from auth.sessions where id='00000000-0000-0000-0000-000000000111';
 set local role authenticated;
 do $$ begin
+ begin perform public.finance_update_own_phones('1234567890',''); raise exception 'Revoked client changed phone'; exception when insufficient_privilege then null; end;
  begin perform public.finance_get_workspace();raise exception 'Revoked client session accepted'; exception when insufficient_privilege then null; end;
 end $$;
 reset role;
 select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000101","session_id":"00000000-0000-0000-0000-000000000110"}',false);
 set local role authenticated;
 select public.finance_save_vault_metadata('{"v":1,"kdf":"PBKDF2-SHA256","iterations":600000,"salt":"test-only"}');
+select public.finance_create_client('LIVE003','Client With Notes') as c3 \gset
+select public.finance_save_vault_item(:'c3',jsonb_build_object('v',1,'iv',repeat('a',16),'ciphertext',repeat('a',32)));
+reset role;
+insert into auth.users(id,email) values ('00000000-0000-0000-0000-000000000104','fixture-link@example.invalid');
+set local role service_role;
+select public.finance_service_link_client('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000110',:'c3','00000000-0000-0000-0000-000000000104',jsonb_build_object('v',1,'iv',repeat('b',16),'ciphertext',repeat('b',32)));
+set local role authenticated;
+do $$ begin
+ if not exists(select 1 from public.finance_clients c join public.finance_vault_items v on v.client_id=c.id
+   where c.customer_code='LIVE003' and c.auth_user_id='00000000-0000-0000-0000-000000000104'
+   and v.envelope->>'ciphertext'=repeat('b',32)) then raise exception 'Client login failed to reuse existing vault row'; end if;
+end $$;
 do $$ begin
  begin perform public.finance_save_vault_item(current_setting('test.live.client')::uuid,'{}');raise exception 'Empty vault envelope accepted'; exception when others then if sqlerrm not like '%Invalid encrypted%' then raise; end if; end;
  perform public.finance_resolve_question(current_setting('test.live.query')::uuid,true);
