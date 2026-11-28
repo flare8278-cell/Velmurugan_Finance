@@ -26,26 +26,51 @@ select set_config(
 );
 set local role authenticated;
 
--- 1. Create two clients + mixed legacy monthly & installment loans
+-- 1. Create two clients + mixed monthly, new flat installment, and preserved reducing installment loans
 select public.finance_create_client('INST001', 'Installment Client One') as c1 \gset
 select public.finance_create_client('INST002', 'Installment Client Two') as c2 \gset
 select set_config('test.inst.c1', :'c1', false);
 select set_config('test.inst.c2', :'c2', false);
 
--- Standard 12-month reducing-balance loan matching src/installments.ts test (100000 INR = 10,000,000 paise @ 1% / mo)
-select public.finance_disburse_installments(
+-- Standard one-time total interest installment loan: 20000 at 20% = 24000 split across 12 months => 2000.00/mo
+select public.finance_disburse_installments_flat(
   '00000000-0000-0000-0000-000000000320',
   :'c1',
-  100000,
-  1,
+  20000,
+  20,
   (now() at time zone 'Asia/Kolkata')::date,
   12,
   true
-) as loan_std \gset
-select set_config('test.inst.loan_std', :'loan_std', false);
+) as loan_flat \gset
+select set_config('test.inst.loan_flat', :'loan_flat', false);
 
--- Zero-interest 3-month rounding test (10.00 INR = 1000 paise @ 0% / mo -> 3.33, 3.33, 3.34)
-select public.finance_disburse_installments(
+-- Non-divisible & fractional-rate paise parity checks:
+-- 20000 at 20% = 24000 across 7 months => 3428.57 x 6 + 3428.58
+select public.finance_disburse_installments_flat(
+  '00000000-0000-0000-0000-000000000324',
+  :'c2',
+  20000,
+  20,
+  (now() at time zone 'Asia/Kolkata')::date,
+  7,
+  true
+) as loan_flat7 \gset
+select set_config('test.inst.loan_flat7', :'loan_flat7', false);
+
+-- Fractional half-up rounding: 200.50 at 15.25% = 30.58 interest (3057.625 paise -> 3058)
+select public.finance_disburse_installments_flat(
+  '00000000-0000-0000-0000-000000000325',
+  :'c2',
+  200.50,
+  15.25,
+  (now() at time zone 'Asia/Kolkata')::date,
+  3,
+  true
+) as loan_frac \gset
+select set_config('test.inst.loan_frac', :'loan_frac', false);
+
+-- Zero-interest 3-month rounding test (10.00 INR = 1000 paise @ 0% -> 3.33, 3.33, 3.34)
+select public.finance_disburse_installments_flat(
   '00000000-0000-0000-0000-000000000321',
   :'c2',
   10.00,
@@ -56,7 +81,7 @@ select public.finance_disburse_installments(
 ) as loan_zero \gset
 select set_config('test.inst.loan_zero', :'loan_zero', false);
 
--- Legacy monthly loan on Client One preserved alongside installment loan
+-- Legacy monthly loan on Client One preserved alongside installment loans
 select public.finance_disburse(
   '00000000-0000-0000-0000-000000000322',
   :'c1',
@@ -67,18 +92,45 @@ select public.finance_disburse(
 ) as loan_monthly \gset
 select set_config('test.inst.loan_monthly', :'loan_monthly', false);
 
--- Backdated installment loan on Client One with 2 installments strictly overdue (< business_date)
--- Using date_trunc('month', business_date) - 3 months + 15 days guarantees month 1 = -2mo end, month 2 = -1mo end (both < today)
-select public.finance_disburse_installments(
+-- Backdated flat installment loan on Client One with at least 2 overdue installments
+select public.finance_disburse_installments_flat(
   '00000000-0000-0000-0000-000000000323',
   :'c1',
   60000,
-  2,
+  10,
   (date_trunc('month', now() at time zone 'Asia/Kolkata') - interval '3 months' + interval '14 days')::date,
   6,
   true
 ) as loan_ovd \gset
 select set_config('test.inst.loan_ovd', :'loan_ovd', false);
+
+-- Seed a preserved pre-existing frozen reducing-balance loan (`installment_reducing_v1`) as owner/superuser
+reset role;
+insert into public.finance_loans(
+  id, client_id, original_principal, monthly_rate, disbursed_on, first_due_on, next_due_on,
+  terms_code, installment_months, terms_approved_at, terms_approved_by
+)
+values (
+  '00000000-0000-0000-0000-000000000399',
+  current_setting('test.inst.c1')::uuid,
+  100000,
+  1,
+  (now() at time zone 'Asia/Kolkata')::date,
+  finance_private.following_month_end((now() at time zone 'Asia/Kolkata')::date),
+  finance_private.following_month_end((now() at time zone 'Asia/Kolkata')::date),
+  'installment_reducing_v1',
+  12,
+  now(),
+  '00000000-0000-0000-0000-000000000301'
+);
+select finance_private.generate_installment_schedule(
+  '00000000-0000-0000-0000-000000000399',
+  100000,
+  1,
+  (now() at time zone 'Asia/Kolkata')::date,
+  12
+);
+set local role authenticated;
 
 do $$
 declare
@@ -86,6 +138,9 @@ declare
   v_row1 public.finance_loan_installments;
   v_row12 public.finance_loan_installments;
   v_sum_p numeric;
+  v_sum_i numeric;
+  v_sum_t numeric;
+  v_terms text;
   v_snap jsonb;
   v_pay1 public.finance_payments;
   v_pay2 public.finance_payments;
@@ -96,42 +151,75 @@ declare
   v_pay_i numeric;
   v_max_pay numeric;
   v_today date := (now() at time zone 'Asia/Kolkata')::date;
+  v_leg_id uuid := '00000000-0000-0000-0000-000000000399';
 begin
+  -- Verify newly disbursed loan uses installment_flat_v1
+  select terms_code into v_terms from public.finance_loans
+    where id = current_setting('test.inst.loan_flat')::uuid;
+  if v_terms <> 'installment_flat_v1' then
+    raise exception 'TEST FAIL: expected terms_code installment_flat_v1, got %', v_terms;
+  end if;
+
   -- Idempotent retry succeeds, mismatched payload rejects
-  v_dup := public.finance_disburse_installments(
+  v_dup := public.finance_disburse_installments_flat(
     '00000000-0000-0000-0000-000000000320',
     current_setting('test.inst.c1')::uuid,
-    100000, 1, v_today, 12, true
+    20000, 20, v_today, 12, true
   );
-  if v_dup <> current_setting('test.inst.loan_std')::uuid then
+  if v_dup <> current_setting('test.inst.loan_flat')::uuid then
     raise exception 'TEST FAIL: installment disbursement retry created duplicate';
   end if;
   begin
-    perform public.finance_disburse_installments(
+    perform public.finance_disburse_installments_flat(
       '00000000-0000-0000-0000-000000000320',
       current_setting('test.inst.c1')::uuid,
-      100000, 1, v_today, 6, true
+      20000, 20, v_today, 6, true
     );
     raise exception 'TEST FAIL: mismatched installment months accepted';
   exception when others then
     if sqlerrm not like '%payload mismatch%' then raise; end if;
   end;
 
-  -- Check frozen reducing schedule values match JS calculateInstallments
+  -- Check 20000 at 20% = 24000 across 12 months => exact 2000.00/mo, sum principal 20000, sum interest 4000
   select * into strict v_row1 from public.finance_loan_installments
-    where loan_id = current_setting('test.inst.loan_std')::uuid and installment_number = 1;
+    where loan_id = current_setting('test.inst.loan_flat')::uuid and installment_number = 1;
   select * into strict v_row12 from public.finance_loan_installments
-    where loan_id = current_setting('test.inst.loan_std')::uuid and installment_number = 12;
-  if v_row1.principal_due <> 7884.88 or v_row1.interest_due <> 1000.00 or v_row1.total_due <> 8884.88 then
-    raise exception 'TEST FAIL: unexpected installment 1 values: %', v_row1;
+    where loan_id = current_setting('test.inst.loan_flat')::uuid and installment_number = 12;
+  if v_row1.principal_due <> 1666.67 or v_row1.interest_due <> 333.33 or v_row1.total_due <> 2000.00 then
+    raise exception 'TEST FAIL: unexpected flat installment 1 values: %', v_row1;
   end if;
-  if v_row12.remaining_principal <> 0 then
-    raise exception 'TEST FAIL: final remaining_principal nonzero: %', v_row12;
+  if v_row12.principal_due <> 1666.63 or v_row12.interest_due <> 333.37 or v_row12.total_due <> 2000.00 or v_row12.remaining_principal <> 0 then
+    raise exception 'TEST FAIL: unexpected flat installment 12 values: %', v_row12;
   end if;
-  select sum(principal_due) into v_sum_p from public.finance_loan_installments
-    where loan_id = current_setting('test.inst.loan_std')::uuid;
-  if v_sum_p <> 100000.00 then
-    raise exception 'TEST FAIL: installment principal sum mismatch: %', v_sum_p;
+  select sum(principal_due), sum(interest_due), sum(total_due)
+    into v_sum_p, v_sum_i, v_sum_t
+    from public.finance_loan_installments
+    where loan_id = current_setting('test.inst.loan_flat')::uuid;
+  if v_sum_p <> 20000.00 or v_sum_i <> 4000.00 or v_sum_t <> 24000.00 then
+    raise exception 'TEST FAIL: flat installment sum mismatch: p=%, i=%, t=%', v_sum_p, v_sum_i, v_sum_t;
+  end if;
+
+  -- Check 7-month non-divisible split (3428.57 x 6 + 3428.58 = 24000.00)
+  select sum(principal_due), sum(interest_due), sum(total_due)
+    into v_sum_p, v_sum_i, v_sum_t
+    from public.finance_loan_installments
+    where loan_id = current_setting('test.inst.loan_flat7')::uuid;
+  if v_sum_p <> 20000.00 or v_sum_i <> 4000.00 or v_sum_t <> 24000.00 then
+    raise exception 'TEST FAIL: flat 7m sum mismatch: p=%, i=%, t=%', v_sum_p, v_sum_i, v_sum_t;
+  end if;
+  if (select string_agg(total_due::text, ',' order by installment_number)
+      from public.finance_loan_installments where loan_id = current_setting('test.inst.loan_flat7')::uuid)
+     <> '3428.57,3428.57,3428.57,3428.57,3428.57,3428.57,3428.58' then
+    raise exception 'TEST FAIL: flat 7m installment row parity mismatch';
+  end if;
+
+  -- Check fractional half-up rounding parity (200.50 @ 15.25% over 3m -> 30.58 interest, 231.08 total)
+  select sum(principal_due), sum(interest_due), sum(total_due)
+    into v_sum_p, v_sum_i, v_sum_t
+    from public.finance_loan_installments
+    where loan_id = current_setting('test.inst.loan_frac')::uuid;
+  if v_sum_p <> 200.50 or v_sum_i <> 30.58 or v_sum_t <> 231.08 then
+    raise exception 'TEST FAIL: fractional flat rounding mismatch: p=%, i=%, t=%', v_sum_p, v_sum_i, v_sum_t;
   end if;
 
   -- Check 0% rounding ([3.33, 3.33, 3.34])
@@ -140,28 +228,54 @@ begin
     raise exception 'TEST FAIL: 0%% installment rounding mismatch';
   end if;
 
-  -- Confirm installment loans do NOT create rows in finance_interest_charges
+  -- Confirm preserved existing installment_reducing_v1 frozen schedule works end-to-end (balance, snapshot, payment, rate lock)
+  select * into strict v_row1 from public.finance_loan_installments
+    where loan_id = v_leg_id and installment_number = 1;
+  if v_row1.principal_due <> 7884.88 or v_row1.interest_due <> 1000.00 or v_row1.total_due <> 8884.88 then
+    raise exception 'TEST FAIL: preserved reducing installment 1 mismatch: %', v_row1;
+  end if;
+  v_snap := public.finance_loan_snapshot(v_leg_id);
+  if (v_snap->>'principal')::numeric <> 100000.00 or (v_snap->>'max_payment')::numeric <> 106618.53 then
+    raise exception 'TEST FAIL: preserved reducing loan snapshot mismatch: %', v_snap;
+  end if;
+  v_pay1 := public.finance_record_payment(
+    '00000000-0000-0000-0000-000000000398',
+    v_leg_id,
+    8884.88,
+    v_today,
+    'bank',
+    'LEGACY-RED-1'
+  );
+  if v_pay1.interest_paid <> 1000.00 or v_pay1.principal_paid <> 7884.88 then
+    raise exception 'TEST FAIL: preserved reducing loan payment failed: %', v_pay1;
+  end if;
+  begin
+    perform public.finance_update_loan_rate(v_leg_id, 2.0);
+    raise exception 'TEST FAIL: rate edit allowed on preserved reducing installment loan';
+  exception when others then
+    if sqlerrm not like '%frozen installment%' then raise; end if;
+  end;
+
+  -- Confirm installment loans do NOT create rows in finance_interest_charges, while legacy monthly loan still posts
   v_ws := public.finance_get_workspace();
   if exists (
     select 1 from public.finance_interest_charges
-    where loan_id in (current_setting('test.inst.loan_std')::uuid, current_setting('test.inst.loan_ovd')::uuid)
+    where loan_id in (current_setting('test.inst.loan_flat')::uuid, current_setting('test.inst.loan_ovd')::uuid, v_leg_id)
   ) then
     raise exception 'TEST FAIL: installment loan generated monthly interest charges';
   end if;
-  -- Legacy monthly loan still posts due charges
   if not exists (
     select 1 from public.finance_interest_charges where loan_id = current_setting('test.inst.loan_monthly')::uuid
   ) then
     raise exception 'TEST FAIL: legacy monthly loan did not post charges';
   end if;
 
-  -- Check overdue count and due balances on backdated installment loan
+  -- Check overdue count and chronological payment allocation on backdated flat installment loan
   v_snap := public.finance_loan_snapshot(current_setting('test.inst.loan_ovd')::uuid);
   if (v_snap->>'overdue_count')::int < 2 then
     raise exception 'TEST FAIL: expected >= 2 overdue installments, got %', v_snap;
   end if;
 
-  -- Pay exact Installment #1 + Rs 100 toward Installment #2 (clears #2 interest first)
   select * into strict v_row1 from public.finance_loan_installments
     where loan_id = current_setting('test.inst.loan_ovd')::uuid and installment_number = 1;
   v_inst1_total := v_row1.total_due;
@@ -197,10 +311,10 @@ begin
     raise exception 'TEST FAIL: duplicate payment retry produced second receipt';
   end if;
 
-  -- Reject rate edits on frozen installment loan, while allowing on legacy monthly loan
+  -- Reject rate edits on frozen flat installment loan, while allowing on legacy monthly loan
   begin
     perform public.finance_update_loan_rate(current_setting('test.inst.loan_ovd')::uuid, 1.5);
-    raise exception 'TEST FAIL: rate change allowed on frozen installment loan';
+    raise exception 'TEST FAIL: rate change allowed on frozen flat installment loan';
   exception when others then
     if sqlerrm not like '%frozen installment%' then raise; end if;
   end;
@@ -251,18 +365,18 @@ declare
   v_ws jsonb;
   v_n int;
 begin
-  -- Client 1 sees only Client 1's 18 installments (12 + 6), not Client 2's 3
+  -- Client 1 sees only Client 1's 30 installments (12 flat + 6 flat_ovd + 12 legacy reducing), not Client 2's 13
   select count(*) into v_n from public.finance_loan_installments;
-  if v_n <> 18 then
-    raise exception 'TEST FAIL: installment RLS leak (expected 18, got %)', v_n;
+  if v_n <> 30 then
+    raise exception 'TEST FAIL: installment RLS leak (expected 30, got %)', v_n;
   end if;
   select count(*) into v_n from public.finance_installment_allocations;
-  if v_n <> 2 then
-    raise exception 'TEST FAIL: allocation RLS count mismatch (expected 2, got %)', v_n;
+  if v_n <> 3 then
+    raise exception 'TEST FAIL: allocation RLS count mismatch (expected 3, got %)', v_n;
   end if;
 
   v_ws := public.finance_get_workspace();
-  if jsonb_array_length(v_ws->'installments') <> 18 or jsonb_array_length(v_ws->'installment_allocations') <> 2 then
+  if jsonb_array_length(v_ws->'installments') <> 30 or jsonb_array_length(v_ws->'installment_allocations') <> 3 then
     raise exception 'TEST FAIL: workspace installment isolation mismatch';
   end if;
 
@@ -279,13 +393,13 @@ begin
 
   -- Private & owner RPCs blocked
   begin
-    perform public.finance_disburse_installments(gen_random_uuid(), current_setting('test.inst.c1')::uuid, 1000, 1, (now() at time zone 'Asia/Kolkata')::date, 3, true);
+    perform public.finance_disburse_installments_flat(gen_random_uuid(), current_setting('test.inst.c1')::uuid, 1000, 1, (now() at time zone 'Asia/Kolkata')::date, 3, true);
     raise exception 'TEST FAIL: client created installment loan';
   exception when insufficient_privilege then null; end;
 
   begin
-    perform finance_private.generate_installment_schedule(gen_random_uuid(), 1000, 1, (now() at time zone 'Asia/Kolkata')::date, 3);
-    raise exception 'TEST FAIL: client invoked private schedule helper';
+    perform finance_private.generate_flat_installment_schedule(gen_random_uuid(), 1000, 1, (now() at time zone 'Asia/Kolkata')::date, 3);
+    raise exception 'TEST FAIL: client invoked private flat schedule helper';
   exception when insufficient_privilege then null; end;
 end $$;
 
@@ -343,4 +457,4 @@ do $$ begin
 end $$;
 
 rollback;
-\echo 'PASS: persisted installment schedules, interest-first allocation, overdue counts, RLS, delete-history and purge'
+\echo 'PASS: flat total-interest & preserved reducing-balance schedules, allocation, overdue counts, RLS, delete-history and purge'

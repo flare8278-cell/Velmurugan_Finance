@@ -10,6 +10,7 @@ import {
   fromPaise,
   getLoanPayments,
   getPersistedInstallmentSupport,
+  isFlatInstallmentLoan,
   isInstallmentLoan,
   partitionAndSortBorrowerLoans,
   previewInstallmentPaymentAllocation,
@@ -647,4 +648,58 @@ test('allocateLoanInstallments, previewInstallmentPaymentAllocation and borrower
   );
   assert.ok(allocReceiptHtml.includes('Installment Allocation'));
   assert.ok(allocReceiptHtml.includes('installment_reducing_v1'));
+
+  // One-time total interest flat installment loan (installment_flat_v1) preserves schedule, labels & receipts
+  const flatInstLoan = {
+    ...baseLoan,
+    id: '88888888-8888-4888-8888-888888888888',
+    original_principal: 20000,
+    terms_code: 'installment_flat_v1',
+    installment_months: 12,
+    monthly_rate: 20,
+    first_due_on: '2026-09-30',
+    next_due_on: '2026-10-31',
+    balance: {
+      principal: 18333.33,
+      interest: 333.33,
+      total: 18666.66,
+      scheduled_interest: 3666.67,
+      max_payment: 22000
+    }
+  };
+  assert.equal(isFlatInstallmentLoan(flatInstLoan), true);
+  assert.equal(isFlatInstallmentLoan(instLoan), false);
+  assert.equal(isInstallmentLoan(flatInstLoan), true);
+  assert.equal(getPersistedInstallmentSupport(flatInstLoan).supported, true);
+  assert.equal(getPersistedInstallmentSupport(flatInstLoan).termsCode, 'installment_flat_v1');
+
+  const flatReceiptHtml = buildReceiptHtml(
+    {
+      id: 'pay-flat-1',
+      loan_id: flatInstLoan.id,
+      amount: 2000,
+      interest_paid: 333.33,
+      principal_paid: 1666.67,
+      paid_on: '2026-09-30',
+      method: 'upi',
+      reference: 'FLAT-1',
+      created_at: '2026-09-30T10:00:00Z'
+    },
+    flatInstLoan,
+    undefined,
+    [
+      {
+        id: 'af-1',
+        payment_id: 'pay-flat-1',
+        loan_id: flatInstLoan.id,
+        installment_id: 'fi-1',
+        installment_number: 1,
+        interest_paid: 333.33,
+        principal_paid: 1666.67,
+        created_at: '2026-09-30T10:00:00Z'
+      }
+    ]
+  );
+  assert.ok(flatReceiptHtml.includes('Installment Allocation'));
+  assert.ok(flatReceiptHtml.includes('installment_flat_v1'));
 });

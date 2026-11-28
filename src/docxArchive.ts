@@ -219,7 +219,11 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
   const totalPrincipalDue = loans.reduce((acc, l) => acc + Number(l.balance?.principal || 0), 0);
   const totalInterestDue = loans.reduce((acc, l) => acc + Number(l.balance?.interest || 0), 0);
   const totalRepaid = payments.reduce((acc, p) => acc + Number(p.amount || 0), 0);
-  const installmentLoansCount = loans.filter(l => l.terms_code === 'installment_reducing_v1').length;
+  const installmentLoansCount = loans.filter(
+    l =>
+      l.terms_code === 'installment_reducing_v1' ||
+      l.terms_code === 'installment_flat_v1'
+  ).length;
 
   const clientMap = new Map(clients.map(c => [c.id, c]));
   const loanMap = new Map(loans.map(l => [l.id, l]));
@@ -285,9 +289,11 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
       loans.map((l, idx) => {
         const c = clientMap.get(l.client_id);
         const termsLabel =
-          l.terms_code === 'installment_reducing_v1'
-            ? `${l.installment_months || '—'}x Reducing (${l.monthly_rate}%)`
-            : `Monthly (${l.monthly_rate}%)`;
+          l.terms_code === 'installment_flat_v1'
+            ? `${l.installment_months || '—'}x Flat (${l.monthly_rate}% total)`
+            : l.terms_code === 'installment_reducing_v1'
+            ? `${l.installment_months || '—'}x Reducing (${l.monthly_rate}%/mo)`
+            : `Monthly (${l.monthly_rate}%/mo)`;
         return [
           `LN-${idx + 1} (${l.id.slice(0, 6).toUpperCase()})`,
           c ? c.name : 'Unknown',
@@ -349,7 +355,7 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
     )}
 
     ${xmlPara(`${installments.length > 0 ? '6' : '5'}. COMPLIANCE & TAMPER-EVIDENT RECORD CERTIFICATION`, {bold: true, size: 24, color: '0EA5E9', spaceBefore: 360, spaceAfter: 80})}
-    ${xmlPara('Every payment receipt recorded in this ledger carries an immutable, tamper-evident record. Payments follow interest-first clearance according to monthly_remaining_v1 and frozen installment_reducing_v1 schedules. Database level Row-Level Security (RLS) ensures full tenant isolation and cryptographic verification.', {size: 19, color: 'A9B9CB', spaceAfter: 200})}
+    ${xmlPara('Every payment receipt recorded in this ledger carries an immutable, tamper-evident record. Payments follow interest-first clearance according to monthly_remaining_v1, installment_flat_v1, and frozen installment_reducing_v1 schedules. Database level Row-Level Security (RLS) ensures full tenant isolation and cryptographic verification.', {size: 19, color: 'A9B9CB', spaceAfter: 200})}
 
     <w:sectPr>
       <w:pgSz w:w="12240" w:h="15840"/>

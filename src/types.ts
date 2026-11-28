@@ -34,6 +34,11 @@ export type Client = {
   created_at: string;
 };
 
+export type LoanTermsCode =
+  | 'monthly_remaining_v1'
+  | 'installment_reducing_v1'
+  | 'installment_flat_v1';
+
 export type Loan = {
   id: string;
   client_id: string;
@@ -42,7 +47,7 @@ export type Loan = {
   disbursed_on: string;
   first_due_on: string;
   next_due_on: string;
-  terms_code?: string;
+  terms_code?: LoanTermsCode | string;
   installment_months?: number | null;
   balance: {
     principal: number;

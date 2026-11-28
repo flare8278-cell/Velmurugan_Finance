@@ -60,7 +60,9 @@ test('App.tsx implements borrower Home, Loans, Profile views and mobile bottom t
   assert.match(appCode, /Closed &amp; receipts/, 'Loans must preserve access to closed loans and paid receipts');
   assert.match(appCode, /Closed loan paid receipts/, 'Closed tab must expose paid receipts for closed loans');
   assert.match(appCode, /allocateLoanInterestCharges\(/, 'Loans must allocate real interest charges');
-  assert.match(appCode, /allocateLoanInstallments\(/, 'Loans must allocate persisted reducing-balance installments');
+  assert.match(appCode, /allocateLoanInstallments\(/, 'Loans must allocate persisted installment schedules');
+  assert.match(appCode, /calculateFlatInstallments\(/, 'Owner disbursement must preview one-time total interest installment schedule');
+  assert.match(appCode, /Total interest rate \(%\)/, 'Owner disbursement must label rate as Total interest rate (%) for installments');
   assert.match(appCode, /finance_disburse_installments/, 'Owner loan disbursement must invoke finance_disburse_installments for installment loans');
   assert.match(appCode, /getLoanPayments\(/, 'Loans detail must filter paid history per loan');
   assert.match(appCode, /Download receipt/, 'Loans and receipt modal must support downloading receipts');

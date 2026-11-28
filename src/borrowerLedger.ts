@@ -152,8 +152,15 @@ export function fromPaise(paise: number): number {
   return paise / 100;
 }
 
+export function isFlatInstallmentLoan(loan: Pick<Loan, 'terms_code'>): boolean {
+  return loan.terms_code === 'installment_flat_v1';
+}
+
 export function isInstallmentLoan(loan: Pick<Loan, 'terms_code'>): boolean {
-  return loan.terms_code === 'installment_reducing_v1';
+  return (
+    loan.terms_code === 'installment_reducing_v1' ||
+    loan.terms_code === 'installment_flat_v1'
+  );
 }
 
 export function followingMonthEndYmd(ymd: string): string {
@@ -182,9 +189,9 @@ export function isLoanClosed(loan: Pick<Loan, 'balance'>): boolean {
 }
 
 /**
- * Checks whether a loan uses a persisted reducing-balance installment schedule
- * (`installment_reducing_v1` with persisted rows in finance_loan_installments)
- * vs legacy `monthly_remaining_v1`.
+ * Checks whether a loan uses a persisted installment schedule
+ * (`installment_flat_v1` or `installment_reducing_v1` with persisted rows in
+ * finance_loan_installments) vs legacy `monthly_remaining_v1`.
  */
 export function getPersistedInstallmentSupport(
   loan: Pick<Loan, 'terms_code'> & {id?: string},
@@ -193,7 +200,10 @@ export function getPersistedInstallmentSupport(
   const termsCode = loan.terms_code || 'monthly_remaining_v1';
   const hasRows = loan.id ? installments.some(i => i.loan_id === loan.id) : false;
   return {
-    supported: termsCode === 'installment_reducing_v1' || hasRows,
+    supported:
+      termsCode === 'installment_reducing_v1' ||
+      termsCode === 'installment_flat_v1' ||
+      hasRows,
     termsCode
   };
 }
@@ -886,9 +896,9 @@ export function buildReceiptHtml(
     : '';
 
   const policyFoot =
-    termsCode === 'installment_reducing_v1'
-      ? `Recorded under ${termsCode} (installments allocated chronologically, interest cleared prior to principal per installment). Salem · Clear accounts.`
-      : `Recorded under ${termsCode} (unpaid posted interest cleared prior to capital reduction). Salem · Clear accounts.`;
+    termsCode === 'installment_reducing_v1' || termsCode === 'installment_flat_v1'
+      ? `Recorded under ${escapeHtml(termsCode)} (installments allocated chronologically, interest cleared prior to principal per installment). Salem · Clear accounts.`
+      : `Recorded under ${escapeHtml(termsCode)} (unpaid posted interest cleared prior to capital reduction). Salem · Clear accounts.`;
 
   return `<!doctype html>
 <html lang="en">

@@ -27,7 +27,7 @@ import {
   ShieldIcon
 } from './icons';
 import {generateDocxArchive, downloadDocx} from './docxArchive';
-import {calculateInstallments} from './installments';
+import {calculateFlatInstallments} from './installments';
 import {
   allocateLoanInstallments,
   allocateLoanInterestCharges,
@@ -36,6 +36,7 @@ import {
   formatReceiptFilename,
   fromPaise,
   getLoanPayments,
+  isFlatInstallmentLoan,
   isInstallmentLoan,
   isLoanClosed,
   partitionAndSortBorrowerLoans,
@@ -149,7 +150,7 @@ export default function App() {
   const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentLoan, setPaymentLoan] = useState('');
-  const [loanTermsMode, setLoanTermsMode] = useState<'monthly_remaining_v1' | 'installment_reducing_v1'>('monthly_remaining_v1');
+  const [loanTermsMode, setLoanTermsMode] = useState<'monthly_remaining_v1' | 'installment_flat_v1'>('monthly_remaining_v1');
   const [loanAmountDraft, setLoanAmountDraft] = useState('');
   const [loanRateDraft, setLoanRateDraft] = useState('');
   const [loanMonthsDraft, setLoanMonthsDraft] = useState('12');
@@ -456,8 +457,8 @@ export default function App() {
         notify('Ledger permanently purged.');
         setPurgeInput('');
       } else if (modal === 'loan') {
-        if (loanTermsMode === 'installment_reducing_v1') {
-          await rpc('finance_disburse_installments', {
+        if (loanTermsMode === 'installment_flat_v1') {
+          await rpc('finance_disburse_installments_flat', {
             p_request: requestId.current,
             p_client: f.get('client'),
             p_amount: Number(f.get('amount')),
@@ -685,10 +686,17 @@ export default function App() {
   const totals = {
     capital: data.loans.reduce((n, l) => n + Number(l.balance.principal), 0),
     interest: data.loans.reduce((n, l) => n + Number(l.balance.interest), 0),
-    monthly: data.loans.reduce(
-      (n, l) => n + (Number(l.balance.principal) * Number(l.monthly_rate)) / 100,
-      0
-    )
+    monthly: data.loans.reduce((n, l) => {
+      if (isInstallmentLoan(l)) {
+        const instLedger = allocateLoanInstallments(
+          l,
+          data.installments || [],
+          data.business_date || businessDate()
+        );
+        return n + fromPaise(instLedger.upcomingInterestEstimatePaise);
+      }
+      return n + (Number(l.balance.principal) * Number(l.monthly_rate)) / 100;
+    }, 0)
   };
 
   const selectedPaymentLoan = loan(paymentLoan);
@@ -1805,7 +1813,12 @@ export default function App() {
                           <div>
                             <strong>Loan #{l.id.slice(0, 8).toUpperCase()}</strong>
                             <small>
-                              Disbursed {date(l.disbursed_on)} · {l.monthly_rate}% / month
+                              Disbursed {date(l.disbursed_on)} ·{' '}
+                              {isFlatInstallmentLoan(l)
+                                ? `${l.monthly_rate}% total · ${l.installment_months} mo`
+                                : isInstallmentLoan(l)
+                                ? `${l.monthly_rate}% / month · ${l.installment_months} mo`
+                                : `${l.monthly_rate}% / month`}
                             </small>
                             <small>Next due: {date(l.next_due_on)}</small>
                           </div>
@@ -1817,7 +1830,7 @@ export default function App() {
                               {money(l.balance.interest)} interest
                             </small>
                             <div style={{marginTop: 4, display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap'}}>
-                              {Number(l.balance.total) > 0 && (
+                              {Number(l.balance.max_payment ?? l.balance.total) > 0 && (
                                 <button
                                   type="button"
                                   className="text-button"
@@ -1829,7 +1842,7 @@ export default function App() {
                                   Repay ↙
                                 </button>
                               )}
-                              {owner && (
+                              {owner && !isInstallmentLoan(l) && (
                                 <button
                                   type="button"
                                   className="text-button"
@@ -2279,12 +2292,12 @@ export default function App() {
                         type="button"
                         className={
                           'loan-scope-btn ' +
-                          (loanTermsMode === 'installment_reducing_v1' ? 'active' : '')
+                          (loanTermsMode === 'installment_flat_v1' ? 'active' : '')
                         }
-                        aria-pressed={loanTermsMode === 'installment_reducing_v1'}
-                        onClick={() => setLoanTermsMode('installment_reducing_v1')}
+                        aria-pressed={loanTermsMode === 'installment_flat_v1'}
+                        onClick={() => setLoanTermsMode('installment_flat_v1')}
                       >
-                        Reducing-balance installments
+                        Total-interest installments
                       </button>
                     </div>
                   </div>
@@ -2302,7 +2315,11 @@ export default function App() {
                       step="0.01"
                     />
                     <Field
-                      label="Monthly rate (%)"
+                      label={
+                        loanTermsMode === 'installment_flat_v1'
+                          ? 'Total interest rate (%)'
+                          : 'Monthly rate (%)'
+                      }
                       name="rate"
                       type="number"
                       value={loanRateDraft}
@@ -2323,7 +2340,7 @@ export default function App() {
                       max={businessDate()}
                       required
                     />
-                    {loanTermsMode === 'installment_reducing_v1' && (
+                    {loanTermsMode === 'installment_flat_v1' && (
                       <Field
                         label="Installment months"
                         name="months"
@@ -2338,16 +2355,16 @@ export default function App() {
                     )}
                   </div>
 
-                  {loanTermsMode === 'installment_reducing_v1' &&
+                  {loanTermsMode === 'installment_flat_v1' &&
                     (() => {
                       const pPaise = toPaise(loanAmountDraft);
                       const rPct = Number(loanRateDraft || 0);
                       const mNum = Number(loanMonthsDraft || 0);
-                      let schedule: ReturnType<typeof calculateInstallments> | null = null;
+                      let schedule: ReturnType<typeof calculateFlatInstallments> | null = null;
                       let previewErr = '';
                       if (loanAmountDraft && loanMonthsDraft) {
                         try {
-                          schedule = calculateInstallments(pPaise, rPct, mNum);
+                          schedule = calculateFlatInstallments(pPaise, rPct, mNum);
                         } catch (err) {
                           previewErr = (err as Error).message;
                         }
@@ -2366,13 +2383,18 @@ export default function App() {
                       const totalPay = schedule
                         ? schedule.reduce((s, r) => s + r.payment, 0)
                         : 0;
+                      const equalInstallments =
+                        schedule &&
+                        schedule.length > 0 &&
+                        schedule[0].payment === schedule[schedule.length - 1].payment;
                       return (
                         <div className="repayment-calculator" aria-live="polite">
                           <div className="repayment-calc-head">
-                            <span>Frozen Reducing-Balance Schedule Preview</span>
+                            <span>Frozen Installment Schedule Preview</span>
                             {schedule && schedule[0] && (
                               <span className="pill">
-                                EMI ≈ {money(fromPaise(schedule[0].payment))}/mo
+                                {equalInstallments ? 'EMI ' : 'EMI ≈ '}
+                                {money(fromPaise(schedule[0].payment))}/mo
                               </span>
                             )}
                           </div>
@@ -2389,13 +2411,17 @@ export default function App() {
                                   </strong>
                                 </div>
                                 <div className="repayment-row">
-                                  <span>Total Scheduled Interest</span>
+                                  <span>Principal</span>
+                                  <strong>{money(fromPaise(pPaise))}</strong>
+                                </div>
+                                <div className="repayment-row">
+                                  <span>Total Interest ({rPct}% one-time)</span>
                                   <strong style={{color: 'var(--gold-text)'}}>
                                     {money(fromPaise(totalInt))}
                                   </strong>
                                 </div>
                                 <div className="repayment-row highlight">
-                                  <span>Total Scheduled Repayment</span>
+                                  <span>Total Repayment ({schedule.length} months)</span>
                                   <strong>{money(fromPaise(totalPay))}</strong>
                                 </div>
                               </div>
@@ -2431,8 +2457,8 @@ export default function App() {
 
                   <label className="checkbox">
                     <input type="checkbox" name="approve" required />
-                    {loanTermsMode === 'installment_reducing_v1'
-                      ? 'I confirm the frozen reducing-balance installment schedule above; payments allocate across unpaid installments clearing interest before principal.'
+                    {loanTermsMode === 'installment_flat_v1'
+                      ? 'I confirm the frozen total-interest installment schedule above (one-time rate applied to original principal); payments allocate chronologically across unpaid installments, clearing interest before principal.'
                       : 'I confirm monthly simple interest on remaining principal; first interest due at the next month’s end; payments clear interest first; no compounding or extra late penalty.'}
                   </label>
                   <p className="fine">
@@ -2639,9 +2665,12 @@ export default function App() {
                           <p className="repayment-note">
                             {selectedPaymentIsInstallment ? (
                               <>
-                                Conforms to <code>installment_reducing_v1</code>. Payments
-                                allocate chronologically across unpaid installments, clearing
-                                interest before principal on each installment.
+                                Conforms to{' '}
+                                <code>
+                                  {selectedPaymentLoan?.terms_code || 'installment_flat_v1'}
+                                </code>
+                                . Payments allocate chronologically across unpaid installments,
+                                clearing interest before principal on each installment.
                               </>
                             ) : (
                               <>
@@ -3019,6 +3048,7 @@ function LoanCards({
     <div className="loan-grid">
       {loans.map(l => {
         const installmentMode = isInstallmentLoan(l);
+        const flatInstallmentMode = isFlatInstallmentLoan(l);
         const instLedger = installmentMode
           ? allocateLoanInstallments(l, installments, effectiveDate)
           : null;
@@ -3046,7 +3076,9 @@ function LoanCards({
                 <small>
                   Loan {l.id.slice(0, 8).toUpperCase()}
                   {installmentMode && l.installment_months
-                    ? ` · ${l.installment_months}x reducing EMI`
+                    ? flatInstallmentMode
+                      ? ` · ${l.installment_months}x flat EMI`
+                      : ` · ${l.installment_months}x reducing EMI`
                     : ''}
                 </small>
               </div>
@@ -3056,7 +3088,10 @@ function LoanCards({
             </div>
             <div className="loan-facts">
               <Fact label="Originally borrowed" value={money(l.original_principal)} />
-              <Fact label="Monthly rate" value={String(l.monthly_rate) + '%'} />
+              <Fact
+                label={flatInstallmentMode ? 'Total interest rate' : 'Monthly rate'}
+                value={flatInstallmentMode ? `${l.monthly_rate}% total` : `${l.monthly_rate}%`}
+              />
               <Fact label="Capital remaining" value={money(l.balance.principal)} />
               <Fact
                 label={installmentMode ? 'Due unpaid interest' : 'Unpaid interest'}
@@ -3105,7 +3140,9 @@ function LoanCards({
               )}
             </div>
             <p className="fine">
-              {installmentMode
+              {flatInstallmentMode
+                ? 'Frozen total-interest installment schedule: one-time interest applied to original principal; payments allocate across installments chronologically, clearing interest before principal.'
+                : installmentMode
                 ? 'Frozen reducing-balance installment schedule: payments allocate across installments chronologically, clearing interest before principal.'
                 : 'Posted interest is due separately from capital. No principal instalment schedule or extra overdue penalty has been added.'}
             </p>
@@ -3684,6 +3721,7 @@ function BorrowerLoansView({
                 ? `${instLedger.dueTodayCount} due today`
                 : `${instLedger.remainingCount}/${l.installment_months || instLedger.rows.length} left`;
 
+              const isFlat = isFlatInstallmentLoan(l);
               return (
                 <article
                   className="loan-card loan-card-action"
@@ -3695,7 +3733,8 @@ function BorrowerLoansView({
                       <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
                       <small>
                         Disbursed on {date(l.disbursed_on)} ·{' '}
-                        {l.installment_months || instLedger.rows.length}x reducing EMI
+                        {l.installment_months || instLedger.rows.length}
+                        {isFlat ? 'x flat EMI' : 'x reducing EMI'}
                       </small>
                     </div>
                     <span className={'badge ' + (needsAttention && !settled ? 'warm' : '')}>
@@ -3712,8 +3751,12 @@ function BorrowerLoansView({
                       value={String(instLedger.overdueCount)}
                     />
                     <Fact
-                      label="Monthly rate"
-                      value={`${l.monthly_rate}% · ${l.installment_months || instLedger.rows.length}m`}
+                      label={isFlat ? 'Total interest' : 'Monthly rate'}
+                      value={
+                        isFlat
+                          ? `${l.monthly_rate}% total · ${l.installment_months || instLedger.rows.length}m`
+                          : `${l.monthly_rate}% · ${l.installment_months || instLedger.rows.length}m`
+                      }
                     />
                     <Fact
                       label="Upcoming interest"
@@ -3940,6 +3983,8 @@ function BorrowerLoansView({
         : 'neutral';
     const nextInst = instLedger.nextInstallment;
 
+    const isFlat = isFlatInstallmentLoan(activeLoan);
+    const monthsCount = activeLoan.installment_months || instLedger.rows.length;
     return (
       <>
         <div className="borrower-back-bar">
@@ -3955,7 +4000,11 @@ function BorrowerLoansView({
         <PageIntro
           eyebrow={'LOAN #' + activeLoan.id.slice(0, 8).toUpperCase()}
           title="Installment schedule & paid history."
-          subtitle={`Disbursed on ${date(activeLoan.disbursed_on)} · ${activeLoan.installment_months || instLedger.rows.length}x reducing EMI at ${activeLoan.monthly_rate}%/month`}
+          subtitle={
+            isFlat
+              ? `Disbursed on ${date(activeLoan.disbursed_on)} · ${monthsCount} installments at ${activeLoan.monthly_rate}% total interest`
+              : `Disbursed on ${date(activeLoan.disbursed_on)} · ${monthsCount}x reducing EMI at ${activeLoan.monthly_rate}%/month`
+          }
         />
 
         <section className={'borrower-month-status-card status-' + statusTone}>
@@ -4028,9 +4077,11 @@ function BorrowerLoansView({
           </div>
 
           <div className="borrower-allocation-note">
-            <strong>Terms ({activeLoan.terms_code || 'installment_reducing_v1'}):</strong>
+            <strong>Terms ({activeLoan.terms_code || 'installment_flat_v1'}):</strong>
             <span>
-              {' '}Frozen reducing-balance schedule: payments allocate chronologically across installments, clearing interest before principal on each installment.
+              {isFlat
+                ? ` Frozen total-interest schedule (${activeLoan.monthly_rate}% applied once to original principal): payments allocate chronologically across installments, clearing interest before principal on each installment.`
+                : ' Frozen reducing-balance schedule: payments allocate chronologically across installments, clearing interest before principal on each installment.'}
             </span>
           </div>
         </section>
