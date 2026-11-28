@@ -65,6 +65,7 @@ test('App.tsx implements borrower Home, Loans, Profile views and mobile bottom t
   assert.match(appCode, /Total interest rate \(%\)/, 'Owner disbursement must label rate as Total interest rate (%) for installments');
   assert.match(appCode, /finance_disburse_installments/, 'Owner loan disbursement must invoke finance_disburse_installments for installment loans');
   assert.match(appCode, /getLoanPayments\(/, 'Loans detail must filter paid history per loan');
+  assert.match(appCode, /getInstallmentReceipts\(/, 'Paid installment rows must resolve contributing receipts via installment allocations');
   assert.match(appCode, /Download receipt/, 'Loans and receipt modal must support downloading receipts');
 
   // Preserved questions and receipt viewing

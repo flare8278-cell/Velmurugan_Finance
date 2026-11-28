@@ -35,6 +35,7 @@ import {
   followingMonthEndYmd,
   formatReceiptFilename,
   fromPaise,
+  getInstallmentReceipts,
   getLoanPayments,
   isFlatInstallmentLoan,
   isInstallmentLoan,
@@ -4110,22 +4111,47 @@ function BorrowerLoansView({
                 </tr>
               </thead>
               <tbody>
-                {instLedger.rows.map(row => (
-                  <tr key={row.installment.id}>
-                    <td><strong>#{row.installment.installment_number}</strong></td>
-                    <td>{date(row.installment.due_on)}</td>
-                    <td>{money(fromPaise(row.principalDuePaise))}</td>
-                    <td>{money(fromPaise(row.interestDuePaise))}</td>
-                    <td><strong>{money(fromPaise(row.totalDuePaise))}</strong></td>
-                    <td>{money(fromPaise(row.totalPaidPaise))}</td>
-                    <td>{money(fromPaise(row.unpaidTotalPaise))}</td>
-                    <td>
-                      <span className={'borrower-charge-badge ' + chargeBadgeTone(row.status)}>
-                        {row.statusLabel}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {instLedger.rows.map(row => {
+                  const rowReceipts = row.isPaid
+                    ? getInstallmentReceipts(
+                        activeLoan.id,
+                        row.installment.id,
+                        installmentAllocations,
+                        loanPayments
+                      )
+                    : [];
+                  return (
+                    <tr key={row.installment.id}>
+                      <td><strong>#{row.installment.installment_number}</strong></td>
+                      <td>{date(row.installment.due_on)}</td>
+                      <td>{money(fromPaise(row.principalDuePaise))}</td>
+                      <td>{money(fromPaise(row.interestDuePaise))}</td>
+                      <td><strong>{money(fromPaise(row.totalDuePaise))}</strong></td>
+                      <td>{money(fromPaise(row.totalPaidPaise))}</td>
+                      <td>{money(fromPaise(row.unpaidTotalPaise))}</td>
+                      <td>
+                        <div className="installment-status-cell">
+                          <span className={'borrower-charge-badge ' + chargeBadgeTone(row.status)}>
+                            {row.statusLabel}
+                          </span>
+                          {rowReceipts.map(p => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              className="button secondary small-btn"
+                              onClick={() => onDownloadReceipt(p)}
+                              title={`Download receipt #${p.id.slice(0, 8).toUpperCase()} (${date(p.paid_on)})`}
+                            >
+                              {rowReceipts.length > 1
+                                ? `Download receipt #${p.id.slice(0, 8).toUpperCase()}`
+                                : 'Download receipt'}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {!instLedger.rows.length && (

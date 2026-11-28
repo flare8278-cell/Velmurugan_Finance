@@ -821,6 +821,40 @@ export function getLoanPayments(loanId: string, payments: Payment[]): Payment[] 
     .sort((a, b) => b.paid_on.localeCompare(a.paid_on) || b.created_at.localeCompare(a.created_at));
 }
 
+/**
+ * Matches an installment row against persisted installment allocations and returns
+ * every distinct same-loan payment receipt that contributed to it in chronological
+ * payment order.
+ */
+export function getInstallmentReceipts(
+  loanId: string,
+  installmentId: string,
+  allocations: InstallmentAllocation[],
+  loanPayments: Payment[]
+): Payment[] {
+  const paymentById = new Map<string, Payment>();
+  for (const p of loanPayments) {
+    if (p.loan_id === loanId && !paymentById.has(p.id)) {
+      paymentById.set(p.id, p);
+    }
+  }
+  const matched = new Map<string, Payment>();
+  for (const alloc of allocations) {
+    if (alloc.loan_id !== loanId || alloc.installment_id !== installmentId) continue;
+    if (toPaise(alloc.interest_paid) + toPaise(alloc.principal_paid) <= 0) continue;
+    const payment = paymentById.get(alloc.payment_id);
+    if (payment && !matched.has(payment.id)) {
+      matched.set(payment.id, payment);
+    }
+  }
+  return Array.from(matched.values()).sort(
+    (a, b) =>
+      a.paid_on.localeCompare(b.paid_on) ||
+      a.created_at.localeCompare(b.created_at) ||
+      a.id.localeCompare(b.id)
+  );
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')

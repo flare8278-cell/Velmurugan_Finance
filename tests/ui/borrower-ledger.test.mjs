@@ -8,6 +8,7 @@ import {
   followingMonthEndYmd,
   formatReceiptFilename,
   fromPaise,
+  getInstallmentReceipts,
   getLoanPayments,
   getPersistedInstallmentSupport,
   isFlatInstallmentLoan,
@@ -702,4 +703,90 @@ test('allocateLoanInstallments, previewInstallmentPaymentAllocation and borrower
   );
   assert.ok(flatReceiptHtml.includes('Installment Allocation'));
   assert.ok(flatReceiptHtml.includes('installment_flat_v1'));
+
+  // getInstallmentReceipts matches same-loan allocations chronologically and returns all distinct split receipts
+  const splitPayA = {
+    id: 'aaaa0001-1111-4111-8111-111111111111',
+    loan_id: flatInstLoan.id,
+    amount: 1000,
+    interest_paid: 333.33,
+    principal_paid: 666.67,
+    paid_on: '2026-10-15',
+    method: 'cash',
+    reference: 'SPLIT-1',
+    created_at: '2026-10-15T09:00:00Z'
+  };
+  const splitPayB = {
+    id: 'bbbb0002-1111-4111-8111-111111111111',
+    loan_id: flatInstLoan.id,
+    amount: 1000,
+    interest_paid: 0,
+    principal_paid: 1000,
+    paid_on: '2026-10-31',
+    method: 'upi',
+    reference: 'SPLIT-2',
+    created_at: '2026-10-31T14:00:00Z'
+  };
+  const crossLoanPayment = {
+    ...splitPayA,
+    id: 'cccc0003-1111-4111-8111-111111111111',
+    loan_id: instLoan.id
+  };
+  const splitAllocs = [
+    // reverse chronological in input + duplicate payment reference + cross-loan entry
+    {
+      id: 'al-2',
+      payment_id: splitPayB.id,
+      loan_id: flatInstLoan.id,
+      installment_id: 'fi-1',
+      installment_number: 1,
+      interest_paid: 0,
+      principal_paid: 1000,
+      created_at: '2026-10-31T14:00:00Z'
+    },
+    {
+      id: 'al-1',
+      payment_id: splitPayA.id,
+      loan_id: flatInstLoan.id,
+      installment_id: 'fi-1',
+      installment_number: 1,
+      interest_paid: 333.33,
+      principal_paid: 666.67,
+      created_at: '2026-10-15T09:00:00Z'
+    },
+    {
+      id: 'al-dup',
+      payment_id: splitPayA.id,
+      loan_id: flatInstLoan.id,
+      installment_id: 'fi-1',
+      installment_number: 1,
+      interest_paid: 0,
+      principal_paid: 0,
+      created_at: '2026-10-15T09:00:01Z'
+    },
+    {
+      id: 'al-cross',
+      payment_id: crossLoanPayment.id,
+      loan_id: flatInstLoan.id,
+      installment_id: 'fi-1',
+      installment_number: 1,
+      interest_paid: 100,
+      principal_paid: 0,
+      created_at: '2026-10-16T09:00:00Z'
+    }
+  ];
+  const matchedSplit = getInstallmentReceipts(
+    flatInstLoan.id,
+    'fi-1',
+    splitAllocs,
+    [splitPayB, splitPayA, crossLoanPayment]
+  );
+  assert.deepEqual(
+    matchedSplit.map(p => p.id),
+    [splitPayA.id, splitPayB.id]
+  );
+  assert.deepEqual(
+    getInstallmentReceipts(flatInstLoan.id, 'fi-unpaid', splitAllocs, [splitPayA, splitPayB]),
+    []
+  );
 });
