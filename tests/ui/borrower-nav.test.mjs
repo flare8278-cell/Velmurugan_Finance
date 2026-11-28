@@ -40,15 +40,26 @@ test('App.tsx implements borrower Home, Loans, Profile views and mobile bottom t
   assert.match(appCode, /<BorrowerLoansView/, 'Must render BorrowerLoansView on loans');
   assert.match(appCode, /<BorrowerProfileView/, 'Must render BorrowerProfileView on profile');
 
-  // Simplified Borrower Home: four metrics only, no receipts or hero clutter
+  // Borrower Home: monthly status distinguishing upcoming from paid + exact 4 cards, no lower panels
   assert.match(appCode, /summarizeBorrowerHome\(/, 'Home must derive metrics via summarizeBorrowerHome');
-  assert.match(appCode, /className="stats borrower-home-stats"/, 'Home must render borrower-home-stats');
-  assert.match(appCode, /No persisted installment schedule exists for this loan/, 'Must state no persisted installment schedule exists');
-  assert.match(appCode, /Borrower identity fields, KYC document uploads.*await user specifications/, 'Must note identity verification awaits user specs');
+  assert.match(appCode, /className=\{'borrower-home-status ' \+ statusClass\}/, 'Home must render borrower-home-status card');
+  assert.match(appCode, /Current month paid/, 'Home cleared status must identify paid current-month interest');
+  assert.match(appCode, /Posted interest cleared · Upcoming \(pre-posting\)/, 'Home cleared status must distinguish pre-posting upcoming from paid');
+  assert.match(appCode, /label="Total outstanding"/, 'Home must render Total outstanding card');
+  assert.match(appCode, /label="Upcoming interest estimate"/, 'Home must render Upcoming interest estimate card');
+  assert.match(appCode, /label="Posted unpaid interest"/, 'Home must render Posted unpaid interest card');
+  assert.match(appCode, /label="Active loans"/, 'Home must render Active loans card');
 
-  // Per-loan drill-down, charge ledger, paid history, and receipt downloads
+  // Installment placeholders removed from borrower screens
+  assert.ok(!appCode.includes('No persisted installment schedule'), 'Must remove installment schedule placeholder notice');
+  assert.ok(!appCode.includes('Installment Calculations'), 'Must remove installment specification placeholder banner');
+  assert.match(appCode, /Borrower identity fields, KYC document uploads.*await user specifications/, 'Must note identity verification awaits user specs under Profile');
+
+  // Active-first Loans with preserved access to closed loans & receipts + per-loan drill-down
+  assert.match(appCode, /partitionAndSortBorrowerLoans\(/, 'Loans must separate and sort active loans first');
+  assert.match(appCode, /Closed &amp; receipts/, 'Loans must preserve access to closed loans and paid receipts');
+  assert.match(appCode, /Closed loan paid receipts/, 'Closed tab must expose paid receipts for closed loans');
   assert.match(appCode, /allocateLoanInterestCharges\(/, 'Loans must allocate real interest charges');
-  assert.match(appCode, /getPersistedInstallmentSupport\(/, 'Loans must check persisted installment support');
   assert.match(appCode, /getLoanPayments\(/, 'Loans detail must filter paid history per loan');
   assert.match(appCode, /Download receipt/, 'Loans and receipt modal must support downloading receipts');
 
@@ -66,10 +77,13 @@ test('styles.css contains mobile bottom nav and borrower view styling', () => {
   assert.match(css, /\.borrower-shell\s+\.main-content\s*\{[\s\S]*?padding-bottom:/, 'main-content must have bottom padding on mobile in borrower-shell');
 
   // Component styles
+  assert.match(css, /\.borrower-home-status\.status-cleared/, 'CSS must style green cleared Home monthly status');
+  assert.match(css, /\.loan-scope-bar/, 'CSS must style loan active/closed filter tabs');
   assert.match(css, /\.borrower-month-status-card/, 'CSS must style borrower-month-status-card');
   assert.match(css, /\.borrower-month-status-card\.status-overdue/, 'CSS must style overdue status card');
   assert.match(css, /\.borrower-charge-badge/, 'CSS must style charge status badge');
   assert.match(css, /\.borrower-allocation-note/, 'CSS must style borrower allocation note');
+  assert.match(css, /\.borrower-notice-card/, 'CSS must style borrower notice card');
   assert.match(css, /\.receipt-row-actions/, 'CSS must style receipt row actions');
   assert.match(css, /\.borrower-profile-card/, 'CSS must style borrower profile card');
   assert.match(css, /\.bottom-nav-item\.active/, 'CSS must style active bottom nav tab');

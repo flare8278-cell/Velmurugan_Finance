@@ -33,7 +33,7 @@ import {
   formatReceiptFilename,
   fromPaise,
   getLoanPayments,
-  getPersistedInstallmentSupport,
+  partitionAndSortBorrowerLoans,
   summarizeBorrowerHome
 } from './borrowerLedger';
 import type {
@@ -139,6 +139,7 @@ export default function App() {
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentLoan, setPaymentLoan] = useState('');
   const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
+  const [loansFilter, setLoansFilter] = useState<'active' | 'closed'>('active');
   const [receipt, setReceipt] = useState<Payment | null>(null);
   const [driveUrl, setDriveUrl] = useState('');
   const [archiveDownloaded, setArchiveDownloaded] = useState(false);
@@ -164,6 +165,7 @@ export default function App() {
     setModal(null);
     setActiveClient(null);
     setSelectedLoanId(null);
+    setLoansFilter('active');
     setReceipt(null);
     setPurgeInput('');
     setPurgeSafetyResult('');
@@ -740,6 +742,7 @@ export default function App() {
                 setPage(p);
                 setMobile(false);
                 setSelectedLoanId(null);
+                setLoansFilter('active');
                 setReceipt(null);
                 setSearch('');
               }}
@@ -964,8 +967,9 @@ export default function App() {
                     charges={data.charges}
                     payments={data.payments}
                     businessDateValue={data.business_date || businessDate()}
-                    onOpenLoans={() => {
+                    onOpenLoans={(tab = 'active') => {
                       setSelectedLoanId(null);
+                      setLoansFilter(tab);
                       setPage('loans');
                     }}
                   />
@@ -1192,6 +1196,8 @@ export default function App() {
                     payments={data.payments}
                     businessDateValue={data.business_date || businessDate()}
                     selectedLoanId={selectedLoanId}
+                    loanFilter={loansFilter}
+                    onChangeLoanFilter={setLoansFilter}
                     onSelectLoan={setSelectedLoanId}
                     onReceipt={setReceipt}
                     onDownloadReceipt={downloadReceiptFile}
@@ -2491,6 +2497,7 @@ export default function App() {
             onClick={() => {
               setPage('overview');
               setSelectedLoanId(null);
+              setLoansFilter('active');
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -2505,6 +2512,7 @@ export default function App() {
             onClick={() => {
               setPage('loans');
               setSelectedLoanId(null);
+              setLoansFilter('active');
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -2519,6 +2527,7 @@ export default function App() {
             onClick={() => {
               setPage('profile');
               setSelectedLoanId(null);
+              setLoansFilter('active');
               setReceipt(null);
               window.scrollTo({top: 0, behavior: 'smooth'});
             }}
@@ -3007,9 +3016,11 @@ function BorrowerHomeView({
   charges: InterestCharge[];
   payments: Payment[];
   businessDateValue: string;
-  onOpenLoans: () => void;
+  onOpenLoans: (tab?: 'active' | 'closed') => void;
 }) {
   const summary = summarizeBorrowerHome(loans, charges, payments, businessDateValue);
+  const monthText = monthLabel(summary.currentMonthKey);
+
   const interestHint =
     summary.overdueChargeCount > 0
       ? `${summary.overdueChargeCount} overdue · ${summary.unpaidChargeCount} open posted`
@@ -3017,13 +3028,86 @@ function BorrowerHomeView({
       ? `${summary.dueTodayChargeCount} due today · ${summary.unpaidChargeCount} open posted`
       : summary.unpaidChargeCount > 0
       ? `${summary.unpaidChargeCount} open posted ${summary.unpaidChargeCount === 1 ? 'charge' : 'charges'}`
-      : 'All posted interest cleared';
+      : 'No unpaid posted charges';
 
-  const activeLoansHint = summary.earliestNextDueOn
-    ? 'Next monthly charge ' + date(summary.earliestNextDueOn)
-    : summary.totalLoansCount > 0
-    ? `${summary.totalLoansCount} recorded ${summary.totalLoansCount === 1 ? 'loan' : 'loans'}`
-    : 'No loans on record';
+  const upcomingHint = summary.earliestNextDueOn
+    ? `Pre-posting estimate · Next charge ${date(summary.earliestNextDueOn)}`
+    : 'No active principal accruing interest';
+
+  const activeLoansHint =
+    summary.closedLoansCount > 0
+      ? `${summary.closedLoansCount} closed · Access receipts in Loans`
+      : summary.totalLoansCount > 0
+      ? 'All recorded loans active'
+      : 'No loans on record';
+
+  const isCleared =
+    summary.statusKind === 'cleared_paid' ||
+    summary.statusKind === 'cleared_upcoming' ||
+    summary.statusKind === 'cleared_mixed' ||
+    summary.statusKind === 'settled';
+
+  const statusClass = isCleared
+    ? 'status-cleared'
+    : summary.statusKind === 'overdue'
+    ? 'status-overdue'
+    : 'status-warm';
+
+  let statusBadge = 'Posted interest cleared';
+  let statusMeta = `${monthText} · As of ${date(businessDateValue)}`;
+  let statusHeadline = '';
+  let statusBody = '';
+
+  if (summary.statusKind === 'cleared_paid') {
+    statusBadge = 'Current month paid';
+    statusMeta = `${monthText} · Paid in full`;
+    statusHeadline = `${money(summary.currentMonthPaidAmount)} posted for ${monthText} paid in full`;
+    statusBody =
+      `All posted monthly interest through ${monthText} is cleared.` +
+      (summary.upcomingInterestEstimate > 0 && summary.earliestNextDueOn
+        ? ` Next pre-posting monthly estimate of ${money(summary.upcomingInterestEstimate)} is expected on ${date(summary.earliestNextDueOn)}.`
+        : '');
+  } else if (summary.statusKind === 'cleared_upcoming') {
+    statusBadge = 'Posted interest cleared · Upcoming (pre-posting)';
+    statusMeta = `${monthText} · Not yet posted`;
+    statusHeadline = `No posted interest due yet · Upcoming estimate ${money(summary.upcomingInterestEstimate)}`;
+    statusBody =
+      `All prior posted charges are cleared. Current-cycle monthly interest has not been posted yet and is estimated at ${money(summary.upcomingInterestEstimate)} on ${summary.earliestNextDueOn ? date(summary.earliestNextDueOn) : 'month-end'}.`;
+  } else if (summary.statusKind === 'cleared_mixed') {
+    statusBadge = 'Posted interest cleared · Paid & upcoming';
+    statusMeta = `${monthText} · ${summary.paidCurrentMonthLoansCount} paid · ${summary.prePostingLoansCount} upcoming`;
+    statusHeadline = `No unpaid posted interest · ${summary.paidCurrentMonthLoansCount} paid, ${summary.prePostingLoansCount} pre-posting`;
+    statusBody =
+      `Posted monthly interest of ${money(summary.currentMonthPaidAmount)} for ${monthText} is paid in full on ${summary.paidCurrentMonthLoansCount} ${summary.paidCurrentMonthLoansCount === 1 ? 'loan' : 'loans'}; active pre-posting monthly interest is estimated at ${money(summary.upcomingInterestEstimate)} total.`;
+  } else if (summary.statusKind === 'settled') {
+    statusBadge = summary.totalLoansCount > 0 ? 'All loans settled' : 'No active loans';
+    statusMeta = `As of ${date(businessDateValue)}`;
+    statusHeadline =
+      summary.totalLoansCount > 0
+        ? 'All loan balances and posted interest settled'
+        : 'No active loans on record';
+    statusBody =
+      summary.closedLoansCount > 0
+        ? 'Closed loan ledgers and paid receipts remain available under Loans.'
+        : 'Active loans and monthly interest status will appear here once disbursed.';
+  } else if (summary.statusKind === 'overdue') {
+    statusBadge = 'Overdue posted interest';
+    statusMeta = `${summary.overdueChargeCount} overdue · ${summary.unpaidChargeCount} open posted`;
+    statusHeadline = `${money(summary.unpaidInterest)} unpaid posted interest`;
+    statusBody =
+      'Posted monthly interest charges remain unpaid. Repayments clear unpaid posted interest before reducing remaining principal.';
+  } else if (summary.statusKind === 'due_today') {
+    statusBadge = 'Posted interest due today';
+    statusMeta = `${summary.dueTodayChargeCount} due today · ${summary.unpaidChargeCount} open posted`;
+    statusHeadline = `${money(summary.unpaidInterest)} posted interest due today`;
+    statusBody = `Posted monthly interest is due today (${date(businessDateValue)}). Repayments clear posted interest before reducing principal.`;
+  } else {
+    statusBadge = 'Unpaid posted interest';
+    statusMeta = `${summary.unpaidChargeCount} open posted`;
+    statusHeadline = `${money(summary.unpaidInterest)} posted interest open`;
+    statusBody =
+      'Posted monthly charges remain unpaid on your active loans. Repayments clear posted interest before reducing principal.';
+  }
 
   return (
     <>
@@ -3035,42 +3119,63 @@ function BorrowerHomeView({
           <button
             type="button"
             className="button primary"
-            onClick={onOpenLoans}
+            onClick={() => onOpenLoans('active')}
           >
             View loans <ChevronRightIcon size={14} />
           </button>
         }
       />
 
+      <section className={'borrower-home-status ' + statusClass}>
+        <div className="borrower-home-status-top">
+          <span
+            className={
+              'borrower-charge-badge ' +
+              (isCleared
+                ? 'paid'
+                : summary.statusKind === 'overdue'
+                ? 'overdue'
+                : 'warm')
+            }
+          >
+            {isCleared && <CheckIcon size={13} />}
+            <span>{statusBadge}</span>
+          </span>
+          <span className="borrower-hero-counter">{statusMeta}</span>
+        </div>
+        <strong className="borrower-home-status-title">{statusHeadline}</strong>
+        <p className="borrower-home-status-copy">{statusBody}</p>
+      </section>
+
       <div className="stats borrower-home-stats">
         <Stat
-          label="Remaining principal"
-          value={money(summary.remainingPrincipal)}
+          label="Total outstanding"
+          value={money(summary.totalBalance)}
           hint={
             summary.activeLoansCount > 0
-              ? 'Outstanding principal across active loans'
-              : 'No remaining loan principal'
+              ? `Principal ${money(summary.remainingPrincipal)} + posted interest ${money(summary.unpaidInterest)}`
+              : 'No outstanding balance'
           }
           feature
-          onClick={onOpenLoans}
+          onClick={() => onOpenLoans('active')}
         />
         <Stat
-          label="Unpaid posted interest"
+          label="Upcoming interest estimate"
+          value={money(summary.upcomingInterestEstimate)}
+          hint={upcomingHint}
+          onClick={() => onOpenLoans('active')}
+        />
+        <Stat
+          label="Posted unpaid interest"
           value={money(summary.unpaidInterest)}
           hint={interestHint}
-          onClick={onOpenLoans}
-        />
-        <Stat
-          label="Total outstanding balance"
-          value={money(summary.totalBalance)}
-          hint="Principal plus unpaid posted interest"
-          onClick={onOpenLoans}
+          onClick={() => onOpenLoans('active')}
         />
         <Stat
           label="Active loans"
           value={String(summary.activeLoansCount)}
           hint={activeLoansHint}
-          onClick={onOpenLoans}
+          onClick={() => onOpenLoans(summary.activeLoansCount === 0 && summary.closedLoansCount > 0 ? 'closed' : 'active')}
         />
       </div>
     </>
@@ -3083,6 +3188,8 @@ function BorrowerLoansView({
   payments,
   businessDateValue,
   selectedLoanId,
+  loanFilter,
+  onChangeLoanFilter,
   onSelectLoan,
   onReceipt,
   onDownloadReceipt
@@ -3092,6 +3199,8 @@ function BorrowerLoansView({
   payments: Payment[];
   businessDateValue: string;
   selectedLoanId: string | null;
+  loanFilter: 'active' | 'closed';
+  onChangeLoanFilter: (tab: 'active' | 'closed') => void;
   onSelectLoan: (loanId: string | null) => void;
   onReceipt: (payment: Payment) => void;
   onDownloadReceipt: (payment: Payment) => void;
@@ -3101,16 +3210,55 @@ function BorrowerLoansView({
     : null;
 
   if (!activeLoan) {
+    const {activeLoans, closedLoans} = partitionAndSortBorrowerLoans(
+      loans,
+      charges,
+      payments,
+      businessDateValue
+    );
+    const showingClosed = loanFilter === 'closed' && closedLoans.length > 0;
+    const visibleLoans = showingClosed ? closedLoans : activeLoans;
+    const closedIds = new Set(closedLoans.map(l => l.id));
+    const closedReceipts = payments
+      .filter(p => closedIds.has(p.loan_id))
+      .slice()
+      .sort(
+        (a, b) =>
+          b.paid_on.localeCompare(a.paid_on) ||
+          b.created_at.localeCompare(a.created_at)
+      );
+
     return (
       <>
         <PageIntro
           eyebrow="YOUR LOANS"
           title="Your loans."
-          subtitle="Select a loan to inspect current-month posted interest status and paid receipts."
+          subtitle="Active loans are shown first. Open any loan for current-month interest status and paid receipts."
         />
 
+        {closedLoans.length > 0 && (
+          <div className="loan-scope-bar" role="group" aria-label="Loan status filter">
+            <button
+              type="button"
+              className={'loan-scope-btn ' + (!showingClosed ? 'active' : '')}
+              aria-pressed={!showingClosed}
+              onClick={() => onChangeLoanFilter('active')}
+            >
+              Active loans ({activeLoans.length})
+            </button>
+            <button
+              type="button"
+              className={'loan-scope-btn ' + (showingClosed ? 'active' : '')}
+              aria-pressed={showingClosed}
+              onClick={() => onChangeLoanFilter('closed')}
+            >
+              Closed &amp; receipts ({closedLoans.length})
+            </button>
+          </div>
+        )}
+
         <div className="loan-grid">
-          {loans.map(l => {
+          {visibleLoans.map(l => {
             const ledger = allocateLoanInterestCharges(
               l,
               charges,
@@ -3134,7 +3282,7 @@ function BorrowerLoansView({
               ? 'Prior interest unpaid'
               : cm.hasPostedCharge && cm.state === 'paid'
               ? 'Current month paid'
-              : 'Active';
+              : 'Pre-posting';
 
             return (
               <article
@@ -3157,7 +3305,7 @@ function BorrowerLoansView({
                     value={money(l.balance.principal)}
                   />
                   <Fact
-                    label="Unpaid posted interest"
+                    label="Posted unpaid interest"
                     value={money(l.balance.interest)}
                   />
                   <Fact
@@ -3165,16 +3313,16 @@ function BorrowerLoansView({
                     value={String(l.monthly_rate) + '%'}
                   />
                   <Fact
-                    label="Current month"
-                    value={cm.label}
-                  />
-                  <Fact
-                    label="Next due date"
+                    label="Upcoming estimate"
                     value={
                       Number(l.balance.principal) > 0
-                        ? date(l.next_due_on)
-                        : 'Settled'
+                        ? money(fromPaise(ledger.upcomingInterestEstimatePaise))
+                        : money(0)
                     }
+                  />
+                  <Fact
+                    label="Current month"
+                    value={cm.label}
                   />
                   <Fact
                     label="Paid receipts"
@@ -3196,12 +3344,96 @@ function BorrowerLoansView({
               </article>
             );
           })}
-          {!loans.length && (
-            <section className="panel">
-              <p className="empty">No loans found for this account.</p>
+          {!visibleLoans.length && (
+            <section className="panel loan-empty-panel">
+              <div className="panel-body">
+                {loans.length === 0 ? (
+                  <p className="empty">No loans found for this account.</p>
+                ) : (
+                  <>
+                    <p className="empty" style={{marginBottom: 14}}>
+                      No active loans right now.
+                    </p>
+                    {closedLoans.length > 0 && (
+                      <button
+                        type="button"
+                        className="button primary"
+                        onClick={() => onChangeLoanFilter('closed')}
+                      >
+                        View closed loans &amp; paid receipts ({closedLoans.length})
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </section>
           )}
         </div>
+
+        {showingClosed && (
+          <section className="panel" style={{marginTop: 20}}>
+            <div className="panel-head">
+              <div>
+                <h2>Closed loan paid receipts</h2>
+                <small>
+                  {closedReceipts.length}{' '}
+                  {closedReceipts.length === 1 ? 'receipt' : 'receipts'} from closed loans
+                </small>
+              </div>
+            </div>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Loan</th>
+                    <th>Receipt / Date</th>
+                    <th>Amount</th>
+                    <th>Interest cleared</th>
+                    <th>Capital reduced</th>
+                    <th>Method / Reference</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {closedReceipts.map(p => (
+                    <tr key={p.id}>
+                      <td>Loan #{p.loan_id.slice(0, 8).toUpperCase()}</td>
+                      <td>
+                        <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
+                        <small>{date(p.paid_on)}</small>
+                      </td>
+                      <td><strong>{money(p.amount)}</strong></td>
+                      <td>{money(p.interest_paid)}</td>
+                      <td>{money(p.principal_paid)}</td>
+                      <td>{p.method} · {p.reference || '—'}</td>
+                      <td>
+                        <div className="receipt-row-actions">
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => onReceipt(p)}
+                          >
+                            <ReceiptIcon size={13} /> View
+                          </button>
+                          <button
+                            type="button"
+                            className="button secondary small-btn"
+                            onClick={() => onDownloadReceipt(p)}
+                          >
+                            Download receipt
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!closedReceipts.length && (
+                <p className="empty">No paid receipts recorded on closed loans.</p>
+              )}
+            </div>
+          </section>
+        )}
       </>
     );
   }
@@ -3213,7 +3445,6 @@ function BorrowerLoansView({
     businessDateValue
   );
   const cm = ledger.currentMonthStatus;
-  const installmentSupport = getPersistedInstallmentSupport(activeLoan);
   const loanPayments = getLoanPayments(activeLoan.id, payments);
   const monthText = monthLabel(cm.monthKey);
   const statusTone =
@@ -3295,6 +3526,10 @@ function BorrowerLoansView({
                 <strong>{money(0)}</strong>
               </div>
               <div>
+                <small>Upcoming estimate</small>
+                <strong>{money(0)}</strong>
+              </div>
+              <div>
                 <small>Status</small>
                 <strong>Settled</strong>
               </div>
@@ -3302,19 +3537,19 @@ function BorrowerLoansView({
           ) : (
             <>
               <div>
-                <small>Posted interest ({monthText})</small>
-                <strong>Not yet posted</strong>
+                <small>Upcoming interest estimate ({monthText})</small>
+                <strong>{money(fromPaise(ledger.upcomingInterestEstimatePaise))}</strong>
+              </div>
+              <div>
+                <small>Posting status</small>
+                <strong>Pre-posting (not yet posted)</strong>
               </div>
               <div>
                 <small>Next posting date</small>
                 <strong>{cm.dueOn ? date(cm.dueOn) : '—'}</strong>
               </div>
               <div>
-                <small>Remaining principal</small>
-                <strong>{money(activeLoan.balance.principal)}</strong>
-              </div>
-              <div>
-                <small>Unpaid posted interest</small>
+                <small>Posted unpaid interest</small>
                 <strong>{money(activeLoan.balance.interest)}</strong>
               </div>
             </>
@@ -3330,7 +3565,7 @@ function BorrowerLoansView({
         <div className="loan-facts borrower-detail-facts">
           <Fact label="Originally borrowed" value={money(activeLoan.original_principal)} />
           <Fact label="Capital remaining" value={money(activeLoan.balance.principal)} />
-          <Fact label="Total unpaid interest" value={money(activeLoan.balance.interest)} />
+          <Fact label="Posted unpaid interest" value={money(activeLoan.balance.interest)} />
           <Fact label="Total outstanding" value={money(activeLoan.balance.total)} />
           <Fact label="First interest due" value={date(activeLoan.first_due_on)} />
           <Fact
@@ -3344,9 +3579,9 @@ function BorrowerLoansView({
         </div>
 
         <div className="borrower-allocation-note">
-          <strong>Terms ({installmentSupport.termsCode}):</strong>
+          <strong>Terms ({activeLoan.terms_code || 'monthly_remaining_v1'}):</strong>
           <span>
-            {' '}Monthly simple interest is posted on remaining principal as monthly interest charges. No persisted installment schedule exists for this loan.
+            {' '}Simple interest accrues monthly on remaining principal. Repayments clear posted unpaid interest before reducing principal.
           </span>
         </div>
       </section>

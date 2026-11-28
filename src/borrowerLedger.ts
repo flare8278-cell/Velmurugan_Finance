@@ -40,19 +40,37 @@ export type LoanInterestLedger = {
   totalInterestPaidPaise: number;
   totalUnpaidPaise: number;
   unallocatedInterestPaidPaise: number;
+  upcomingInterestEstimatePaise: number;
   currentMonthStatus: CurrentMonthInterestStatus;
 };
+
+export type HomeMonthlyStatusKind =
+  | 'overdue'
+  | 'due_today'
+  | 'unpaid'
+  | 'cleared_paid'
+  | 'cleared_upcoming'
+  | 'cleared_mixed'
+  | 'settled';
 
 export type BorrowerHomeSummary = {
   remainingPrincipal: number;
   unpaidInterest: number;
   totalBalance: number;
+  upcomingInterestEstimate: number;
+  prePostingUpcomingEstimate: number;
+  currentMonthPaidAmount: number;
   activeLoansCount: number;
+  closedLoansCount: number;
   totalLoansCount: number;
   unpaidChargeCount: number;
   overdueChargeCount: number;
   dueTodayChargeCount: number;
+  paidCurrentMonthLoansCount: number;
+  prePostingLoansCount: number;
+  currentMonthKey: string;
   earliestNextDueOn: string | null;
+  statusKind: HomeMonthlyStatusKind;
 };
 
 export type PersistedInstallmentSupport = {
@@ -66,6 +84,18 @@ export function toPaise(value: number | string | null | undefined): number {
 
 export function fromPaise(paise: number): number {
   return paise / 100;
+}
+
+export function estimateMonthlyInterestPaise(
+  loan: Pick<Loan, 'balance'> & {monthly_rate?: number}
+): number {
+  const principalPaise = Math.max(0, toPaise(loan.balance.principal));
+  if (principalPaise === 0) return 0;
+  return Math.round((principalPaise * Number(loan.monthly_rate || 0)) / 100);
+}
+
+export function isLoanClosed(loan: Pick<Loan, 'balance'>): boolean {
+  return toPaise(loan.balance.total) === 0;
 }
 
 /**
@@ -87,7 +117,7 @@ export function getPersistedInstallmentSupport(loan: Pick<Loan, 'terms_code'>): 
  * current-month posted interest status against workspace `businessDate` (YYYY-MM-DD).
  */
 export function allocateLoanInterestCharges(
-  loan: Pick<Loan, 'id' | 'next_due_on' | 'balance'>,
+  loan: Pick<Loan, 'id' | 'next_due_on' | 'balance'> & {monthly_rate?: number},
   charges: InterestCharge[],
   payments: Payment[],
   businessDate: string
@@ -218,6 +248,8 @@ export function allocateLoanInterestCharges(
     };
   }
 
+  const upcomingInterestEstimatePaise = estimateMonthlyInterestPaise(loan);
+
   return {
     rowsChronological,
     rowsNewestFirst,
@@ -225,6 +257,7 @@ export function allocateLoanInterestCharges(
     totalInterestPaidPaise,
     totalUnpaidPaise,
     unallocatedInterestPaidPaise: remainingPaidPaise,
+    upcomingInterestEstimatePaise,
     currentMonthStatus
   };
 }
@@ -238,11 +271,18 @@ export function summarizeBorrowerHome(
   let remainingPrincipalPaise = 0;
   let unpaidInterestPaise = 0;
   let totalBalancePaise = 0;
+  let upcomingInterestEstimatePaise = 0;
+  let prePostingUpcomingEstimatePaise = 0;
+  let currentMonthPaidPaise = 0;
   let activeLoansCount = 0;
+  let closedLoansCount = 0;
   let unpaidChargeCount = 0;
   let overdueChargeCount = 0;
   let dueTodayChargeCount = 0;
+  let paidCurrentMonthLoansCount = 0;
+  let prePostingLoansCount = 0;
   let earliestNextDueOn: string | null = null;
+  const currentMonthKey = businessDate.slice(0, 7);
 
   for (const loan of loans) {
     const p = toPaise(loan.balance.principal);
@@ -251,30 +291,124 @@ export function summarizeBorrowerHome(
     remainingPrincipalPaise += p;
     unpaidInterestPaise += i;
     totalBalancePaise += t;
-    if (t > 0) activeLoansCount++;
+
+    const loanUpcomingPaise = estimateMonthlyInterestPaise(loan);
+    upcomingInterestEstimatePaise += loanUpcomingPaise;
+
+    if (t > 0) {
+      activeLoansCount++;
+    } else {
+      closedLoansCount++;
+    }
+
     if (p > 0 && loan.next_due_on) {
       if (!earliestNextDueOn || loan.next_due_on < earliestNextDueOn) {
         earliestNextDueOn = loan.next_due_on;
       }
     }
+
     const ledger = allocateLoanInterestCharges(loan, charges, payments, businessDate);
     for (const row of ledger.rowsChronological) {
       if (!row.isPaid) unpaidChargeCount++;
       if (row.isOverdue) overdueChargeCount++;
       if (row.isDueToday) dueTodayChargeCount++;
     }
+
+    if (t > 0) {
+      if (ledger.currentMonthStatus.hasPostedCharge && ledger.currentMonthStatus.state === 'paid') {
+        paidCurrentMonthLoansCount++;
+        currentMonthPaidPaise += ledger.currentMonthStatus.paidPaise;
+      } else if (ledger.currentMonthStatus.state === 'not_posted') {
+        prePostingLoansCount++;
+        prePostingUpcomingEstimatePaise += loanUpcomingPaise;
+      }
+    }
+  }
+
+  let statusKind: HomeMonthlyStatusKind;
+  if (overdueChargeCount > 0) {
+    statusKind = 'overdue';
+  } else if (dueTodayChargeCount > 0) {
+    statusKind = 'due_today';
+  } else if (unpaidInterestPaise > 0) {
+    statusKind = 'unpaid';
+  } else if (activeLoansCount === 0) {
+    statusKind = 'settled';
+  } else if (paidCurrentMonthLoansCount > 0 && prePostingLoansCount > 0) {
+    statusKind = 'cleared_mixed';
+  } else if (paidCurrentMonthLoansCount > 0) {
+    statusKind = 'cleared_paid';
+  } else {
+    statusKind = 'cleared_upcoming';
   }
 
   return {
     remainingPrincipal: fromPaise(remainingPrincipalPaise),
     unpaidInterest: fromPaise(unpaidInterestPaise),
     totalBalance: fromPaise(totalBalancePaise),
+    upcomingInterestEstimate: fromPaise(upcomingInterestEstimatePaise),
+    prePostingUpcomingEstimate: fromPaise(prePostingUpcomingEstimatePaise),
+    currentMonthPaidAmount: fromPaise(currentMonthPaidPaise),
     activeLoansCount,
+    closedLoansCount,
     totalLoansCount: loans.length,
     unpaidChargeCount,
     overdueChargeCount,
     dueTodayChargeCount,
-    earliestNextDueOn
+    paidCurrentMonthLoansCount,
+    prePostingLoansCount,
+    currentMonthKey,
+    earliestNextDueOn,
+    statusKind
+  };
+}
+
+export function partitionAndSortBorrowerLoans(
+  loans: Loan[],
+  charges: InterestCharge[],
+  payments: Payment[],
+  businessDate: string
+): {
+  activeLoans: Loan[];
+  closedLoans: Loan[];
+  sortedAllLoans: Loan[];
+} {
+  const priorityScore = (loan: Loan): number => {
+    const ledger = allocateLoanInterestCharges(loan, charges, payments, businessDate);
+    if (ledger.rowsChronological.some(r => r.isOverdue)) return 0;
+    if (ledger.rowsChronological.some(r => r.isDueToday)) return 1;
+    if (ledger.totalUnpaidPaise > 0 || toPaise(loan.balance.interest) > 0) return 2;
+    return 3;
+  };
+
+  const activeLoans = loans
+    .filter(l => !isLoanClosed(l))
+    .slice()
+    .sort((a, b) => {
+      const pa = priorityScore(a);
+      const pb = priorityScore(b);
+      if (pa !== pb) return pa - pb;
+      if (a.next_due_on !== b.next_due_on) {
+        return a.next_due_on.localeCompare(b.next_due_on);
+      }
+      if (a.disbursed_on !== b.disbursed_on) {
+        return b.disbursed_on.localeCompare(a.disbursed_on);
+      }
+      return a.id.localeCompare(b.id);
+    });
+
+  const closedLoans = loans
+    .filter(l => isLoanClosed(l))
+    .slice()
+    .sort(
+      (a, b) =>
+        b.disbursed_on.localeCompare(a.disbursed_on) || a.id.localeCompare(b.id)
+    );
+
+  return {
+    activeLoans,
+    closedLoans,
+    sortedAllLoans: [...activeLoans, ...closedLoans]
   };
 }
 

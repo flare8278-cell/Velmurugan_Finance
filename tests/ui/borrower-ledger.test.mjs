@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {
   allocateLoanInterestCharges,
   buildReceiptHtml,
+  estimateMonthlyInterestPaise,
   formatReceiptFilename,
   fromPaise,
   getLoanPayments,
   getPersistedInstallmentSupport,
+  partitionAndSortBorrowerLoans,
   summarizeBorrowerHome
 } from '../../src/borrowerLedger.ts';
 
@@ -183,6 +185,7 @@ test('summarizeBorrowerHome aggregates exact 4 Home metrics from real loans and 
   const loanB = {
     ...baseLoan,
     id: '22222222-2222-4222-8222-222222222222',
+    monthly_rate: 3,
     next_due_on: '2026-12-15',
     balance: {principal: 50000, interest: 1500, total: 51500}
   };
@@ -215,12 +218,143 @@ test('summarizeBorrowerHome aggregates exact 4 Home metrics from real loans and 
   assert.equal(summary.remainingPrincipal, 150000);
   assert.equal(summary.unpaidInterest, 2700);
   assert.equal(summary.totalBalance, 152700);
+  assert.equal(summary.upcomingInterestEstimate, 3500);
   assert.equal(summary.activeLoansCount, 2);
+  assert.equal(summary.closedLoansCount, 1);
   assert.equal(summary.totalLoansCount, 3);
   assert.equal(summary.unpaidChargeCount, 2);
   assert.equal(summary.overdueChargeCount, 1);
   assert.equal(summary.dueTodayChargeCount, 1);
   assert.equal(summary.earliestNextDueOn, '2026-12-15');
+  assert.equal(summary.statusKind, 'overdue');
+});
+
+test('summarizeBorrowerHome distinguishes cleared paid, cleared upcoming (pre-posting), mixed, and settled statuses', () => {
+  const paidNovLoan = {
+    ...baseLoan,
+    id: 'aaaa-paid',
+    next_due_on: '2026-12-31',
+    balance: {principal: 100000, interest: 0, total: 100000}
+  };
+  const prePostingLoan = {
+    ...baseLoan,
+    id: 'bbbb-upcoming',
+    monthly_rate: 3,
+    next_due_on: '2026-12-05',
+    balance: {principal: 50000, interest: 0, total: 50000}
+  };
+  const closedLoan = {
+    ...baseLoan,
+    id: 'cccc-settled',
+    balance: {principal: 0, interest: 0, total: 0}
+  };
+
+  assert.equal(estimateMonthlyInterestPaise(paidNovLoan), 200000);
+  assert.equal(estimateMonthlyInterestPaise(closedLoan), 0);
+
+  const novCharges = [
+    {id: 'c-nov', loan_id: paidNovLoan.id, due_on: '2026-11-30', principal_basis: 100000, rate: 2, amount: 2000}
+  ];
+  const novPayments = [
+    {
+      id: 'p-nov',
+      loan_id: paidNovLoan.id,
+      paid_on: '2026-11-30',
+      amount: 2000,
+      interest_paid: 2000,
+      principal_paid: 0,
+      method: 'upi',
+      reference: 'PAID-NOV',
+      created_at: '2026-11-30T09:00:00Z'
+    }
+  ];
+
+  // 1. Current month posted AND paid -> cleared_paid
+  const paidSummary = summarizeBorrowerHome([paidNovLoan, closedLoan], novCharges, novPayments, '2026-11-30');
+  assert.equal(paidSummary.statusKind, 'cleared_paid');
+  assert.equal(paidSummary.unpaidInterest, 0);
+  assert.equal(paidSummary.currentMonthPaidAmount, 2000);
+  assert.equal(paidSummary.upcomingInterestEstimate, 2000);
+
+  // 2. No posted unpaid interest, mid-month pre-posting -> cleared_upcoming (not claimed paid)
+  const upcomingSummary = summarizeBorrowerHome(
+    [{...prePostingLoan, next_due_on: '2026-11-30'}],
+    [],
+    [],
+    '2026-11-27'
+  );
+  assert.equal(upcomingSummary.statusKind, 'cleared_upcoming');
+  assert.equal(upcomingSummary.unpaidInterest, 0);
+  assert.equal(upcomingSummary.upcomingInterestEstimate, 1500);
+  assert.equal(upcomingSummary.prePostingUpcomingEstimate, 1500);
+
+  // 3. One paid + one pre-posting -> cleared_mixed
+  const mixedSummary = summarizeBorrowerHome(
+    [paidNovLoan, prePostingLoan],
+    novCharges,
+    novPayments,
+    '2026-11-30'
+  );
+  assert.equal(mixedSummary.statusKind, 'cleared_mixed');
+  assert.equal(mixedSummary.paidCurrentMonthLoansCount, 1);
+  assert.equal(mixedSummary.prePostingLoansCount, 1);
+  assert.equal(mixedSummary.upcomingInterestEstimate, 3500);
+
+  // 4. Only closed loans -> settled
+  const settledSummary = summarizeBorrowerHome([closedLoan], [], [], '2026-11-30');
+  assert.equal(settledSummary.statusKind, 'settled');
+  assert.equal(settledSummary.activeLoansCount, 0);
+  assert.equal(settledSummary.closedLoansCount, 1);
+  assert.equal(settledSummary.upcomingInterestEstimate, 0);
+});
+
+test('partitionAndSortBorrowerLoans puts overdue/due-today active loans first and isolates closed loans', () => {
+  const closed = {
+    ...baseLoan,
+    id: 'loan-closed',
+    disbursed_on: '2026-06-01',
+    balance: {principal: 0, interest: 0, total: 0}
+  };
+  const prePosting = {
+    ...baseLoan,
+    id: 'loan-preposting',
+    next_due_on: '2026-12-05',
+    balance: {principal: 50000, interest: 0, total: 50000}
+  };
+  const dueToday = {
+    ...baseLoan,
+    id: 'loan-due-today',
+    next_due_on: '2026-12-31',
+    balance: {principal: 100000, interest: 2000, total: 102000}
+  };
+  const overdue = {
+    ...baseLoan,
+    id: 'loan-overdue',
+    next_due_on: '2026-12-15',
+    balance: {principal: 40000, interest: 1000, total: 41000}
+  };
+
+  const charges = [
+    {id: 'c-due', loan_id: 'loan-due-today', due_on: '2026-11-30', principal_basis: 100000, rate: 2, amount: 2000},
+    {id: 'c-ovd', loan_id: 'loan-overdue', due_on: '2026-10-31', principal_basis: 40000, rate: 2.5, amount: 1000}
+  ];
+
+  const {activeLoans, closedLoans, sortedAllLoans} = partitionAndSortBorrowerLoans(
+    [closed, prePosting, dueToday, overdue],
+    charges,
+    [],
+    '2026-11-30'
+  );
+
+  assert.deepEqual(
+    activeLoans.map(l => l.id),
+    ['loan-overdue', 'loan-due-today', 'loan-preposting']
+  );
+  assert.deepEqual(closedLoans.map(l => l.id), ['loan-closed']);
+  assert.deepEqual(
+    sortedAllLoans.map(l => l.id),
+    ['loan-overdue', 'loan-due-today', 'loan-preposting', 'loan-closed']
+  );
 });
 
 test('getLoanPayments filters/sorts payments and buildReceiptHtml safely escapes XSS', () => {

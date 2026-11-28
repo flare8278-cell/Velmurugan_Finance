@@ -1273,6 +1273,13 @@ td {
   color: #f0f6fc;
 }
 
+td small {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 tr:last-child td {
   border-bottom: none;
 }
@@ -2361,8 +2368,149 @@ table, .stat strong, .amount, .money, .pill, .allocation strong, .loan-facts str
 /* ==========================================================================
    Borrower Dashboard Components
    ========================================================================== */
+.borrower-home-status {
+  background: #070e17;
+  border: 1px solid #1a2634;
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  margin-bottom: 18px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.borrower-home-status.status-cleared {
+  border-color: rgba(16, 185, 129, 0.36);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, #070e17 55%, #040910 100%);
+}
+
+.borrower-home-status.status-warm {
+  border-color: rgba(240, 204, 135, 0.36);
+  background: linear-gradient(135deg, rgba(227, 189, 112, 0.09) 0%, #070e17 55%, #040910 100%);
+}
+
+.borrower-home-status.status-overdue {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, #070e17 55%, #040910 100%);
+}
+
+.borrower-home-status-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.borrower-home-status-title {
+  display: block;
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #f0f6fc;
+  margin-bottom: 6px;
+}
+
+.borrower-home-status.status-cleared .borrower-home-status-title {
+  color: #6ee7b7;
+}
+
+.borrower-home-status.status-warm .borrower-home-status-title {
+  color: #f0cc87;
+}
+
+.borrower-home-status.status-overdue .borrower-home-status-title {
+  color: #fca5a5;
+}
+
+.borrower-home-status-copy {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #a9b9cb;
+  max-width: 720px;
+}
+
 .borrower-home-stats {
   margin-bottom: 12px;
+}
+
+.loan-scope-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px;
+  border-radius: 12px;
+  background: #070e17;
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.loan-scope-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.loan-scope-btn:hover {
+  color: #f0f6fc;
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.loan-scope-btn:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 1px;
+}
+
+.loan-scope-btn.active,
+.loan-scope-btn[aria-pressed="true"] {
+  background: rgba(14, 165, 233, 0.18);
+  border-color: rgba(56, 189, 248, 0.42);
+  color: #7dd3fc;
+}
+
+.loan-empty-panel {
+  grid-column: 1 / -1;
+}
+
+.borrower-notice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: #0b1624;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  margin-top: 22px;
+}
+
+.borrower-notice-card .notice-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.borrower-notice-card .notice-content strong {
+  display: block;
+  font-size: 13.5px;
+  color: #7dd3fc;
+  margin-bottom: 4px;
+}
+
+.borrower-notice-card .notice-content p {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #a9b9cb;
+  margin: 0;
 }
 
 .loan-card-action {
@@ -2534,7 +2682,8 @@ table, .stat strong, .amount, .money, .pill, .allocation strong, .loan-facts str
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .button.small-btn {
@@ -2696,6 +2845,21 @@ table, .stat strong, .amount, .money, .pill, .allocation strong, .loan-facts str
   .borrower-contact-edit button[type="submit"] {
     width: 100%;
     align-self: stretch;
+  }
+  .borrower-home-status {
+    padding: 16px;
+  }
+  .borrower-home-status-title {
+    font-size: 16px;
+  }
+  .loan-scope-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+  .loan-scope-btn {
+    text-align: center;
+    padding: 9px 10px;
   }
   .borrower-month-status-card {
     padding: 18px 16px;
