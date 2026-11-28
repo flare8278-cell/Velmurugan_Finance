@@ -939,7 +939,7 @@ export function buildReceiptHtml(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Payment Receipt #${escapeHtml(receiptCode)} — Velmurugan Finance</title>
+  <title>Payment Receipt #${escapeHtml(receiptCode)} — Velmurugan Capital</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px 16px; }
     .card { max-width: 560px; margin: 0 auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 28px; box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06); }
@@ -954,7 +954,7 @@ export function buildReceiptHtml(
 </head>
 <body>
   <main class="card">
-    <p class="eyebrow">VELMURUGAN FINANCE · PAYMENT RECEIPT</p>
+    <p class="eyebrow">VELMURUGAN CAPITAL · PAYMENT RECEIPT</p>
     <h1>${escapeHtml(formatInr(payment.amount))}</h1>
     <p class="sub">Received on ${escapeHtml(formatDisplayDate(payment.paid_on))}</p>
     <dl>

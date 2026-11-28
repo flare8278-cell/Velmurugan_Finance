@@ -790,17 +790,17 @@ export default function App() {
           <span className="brand-mark">V</span>
           <span className="brand-text">
             <span className="brand-title">
-              Velmurugan <b className="gold">Finance</b>
+              Velmurugan <b className="gold">Capital</b>
             </span>
             <small className="brand-subtitle">EST. 2026 · CLEAR ACCOUNTS</small>
           </span>
         </a>
         <div className="business-switch">
           <span className="avatar gold-avatar">
-            {owner ? 'VF' : data.clients[0]?.name[0] || 'C'}
+            {owner ? 'VC' : data.clients[0]?.name[0] || 'C'}
           </span>
           <div className="business-switch-text">
-            <strong>Velmurugan Finance</strong>
+            <strong>Velmurugan Capital</strong>
             <small>{owner ? 'Active ledger' : 'Personal view'}</small>
           </div>
         </div>
@@ -835,7 +835,7 @@ export default function App() {
           </div>
           <div className="sidebar-user">
             <span className="avatar gold-avatar">
-              {owner ? 'VF' : data.clients[0]?.name[0] || 'C'}
+              {owner ? 'VC' : data.clients[0]?.name[0] || 'C'}
             </span>
             <div>
               <strong>{owner ? 'Financer' : data.clients[0]?.name || 'Client'}</strong>
@@ -1417,7 +1417,7 @@ export default function App() {
                   <section className="panel printable">
                     <div className="statement-head">
                       <div>
-                        <h2>Velmurugan Finance</h2>
+                        <h2>Velmurugan Capital</h2>
                         <p className="muted">
                           Salem · Clarity in every account · Statement as of{' '}
                           {date(businessDate())}
@@ -1486,7 +1486,7 @@ export default function App() {
                             className="button primary"
                             onClick={() => {
                               const bytes = generateDocxArchive(data);
-                              downloadDocx(`velmurugan-finance-archive-${businessDate()}.docx`, bytes);
+                              downloadDocx(`velmurugan-capital-archive-${businessDate()}.docx`, bytes);
                               setArchiveDownloaded(true);
                               notify('Executive DOCX archive downloaded successfully.');
                             }}
@@ -1500,7 +1500,7 @@ export default function App() {
                               download(
                                 `velmurugan-business-records-${businessDate()}.json`,
                                 {
-                                  application: 'Velmurugan Finance',
+                                  application: 'Velmurugan Capital',
                                   exportedAt: new Date().toISOString(),
                                   ...data
                                 }
@@ -2774,7 +2774,7 @@ export default function App() {
       {receipt && (
         <ModalFrame title="Payment receipt" onClose={() => setReceipt(null)}>
           <div className="receipt">
-            <span className="eyebrow">VELMURUGAN FINANCE</span>
+            <span className="eyebrow">VELMURUGAN CAPITAL</span>
             <h2>{money(receipt.amount)}</h2>
             <p>Payment received · {date(receipt.paid_on)}</p>
             <dl>
@@ -3544,7 +3544,7 @@ function BorrowerHomeView({
       <PageIntro
         eyebrow="ACCOUNT SUMMARY"
         title={'Hello, ' + (borrower?.name.split(' ')[0] || 'there') + '.'}
-        subtitle="Key balances across your Velmurugan Finance loans."
+        subtitle="Key balances across your Velmurugan Capital loans."
         actions={
           <button
             type="button"
@@ -4640,7 +4640,7 @@ function BorrowerProfileView({
         <div className="notice-content">
           <strong>Identity Fields & Document Verification</strong>
           <p>
-            Borrower identity fields, KYC document uploads (e.g. Aadhaar, PAN card, address proofs), and photo capture await user specifications. Your existing records are securely maintained in Velmurugan Finance's protected ledger.
+            Borrower identity fields, KYC document uploads (e.g. Aadhaar, PAN card, address proofs), and photo capture await user specifications. Your existing records are securely maintained in Velmurugan Capital's protected ledger.
           </p>
         </div>
       </div>
@@ -4652,7 +4652,7 @@ function BorrowerProfileView({
         <div className="financer-contact-grid">
           <div className="contact-item">
             <small>Lender / Firm</small>
-            <strong>Velmurugan Finance</strong>
+            <strong>Velmurugan Capital</strong>
           </div>
           <div className="contact-item">
             <small>Primary Contact</small>

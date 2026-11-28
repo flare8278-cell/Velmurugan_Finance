@@ -231,7 +231,7 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
   let doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
-    ${xmlPara('VELMURUGAN FINANCE', {bold: true, size: 40, color: '0EA5E9', spaceAfter: 80})}
+    ${xmlPara('VELMURUGAN CAPITAL', {bold: true, size: 40, color: '0EA5E9', spaceAfter: 80})}
     ${xmlPara('Executive Business Ledger & Comprehensive Financial Archive', {bold: true, size: 28, color: 'F0CC87', spaceAfter: 200})}
     ${xmlPara(`Archive Generated: ${new Date().toLocaleDateString('en-IN', {year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'})}`, {size: 20, color: 'A9B9CB', spaceAfter: 60})}
     ${xmlPara('Classification: Confidential Executive Audit & Compliance Ledger', {bold: true, size: 20, color: '7DD3FC', spaceAfter: 240})}

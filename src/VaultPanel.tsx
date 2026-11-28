@@ -220,7 +220,7 @@ export function VaultPanel({
                 className="button secondary"
                 onClick={() => {
                   download('velmurugan-wallet-recovery.json', {
-                    application: 'Velmurugan Finance',
+                    application: 'Velmurugan Capital',
                     version: 1,
                     recoveryCode: recovery,
                     createdAt: new Date().toISOString()

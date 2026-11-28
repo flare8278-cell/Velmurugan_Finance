@@ -24,7 +24,7 @@ export function Login({onSuccess}: {onSuccess: () => Promise<void>}) {
         </Suspense>
         <div className="login-story-content">
           <a className="brand" href="/">
-            V<span>Velmurugan <b>Finance</b></span>
+            V<span>Velmurugan <b>Capital</b></span>
           </a>
           <div className="login-story-hero">
             <p className="eyebrow">CAPITAL & CONFIDENCE</p>

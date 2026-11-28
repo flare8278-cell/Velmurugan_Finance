@@ -92,10 +92,10 @@ Deno.serve(async req=>{
    do{crypto.getRandomValues(random);value=random[0]}while(value>=4294000000);
    const code=String(value%1000000).padStart(6,'0');
    await rpc('finance_service_issue_code',{p_user:i.user.id,p_session:i.session,p_id:id,p_hash:await hash(serviceKey+':'+id+':'+code)});
-   const message={to:i.user.email,subject:'Velmurugan Finance — verification code',text:'Your sign-in code is '+code+'. It expires in 10 minutes. Do not share it.'};
+   const message={to:i.user.email,subject:'Velmurugan Capital — verification code',text:'Your Velmurugan Capital sign-in code is '+code+'. It expires in 10 minutes. Do not share it.'};
    try{
     if(gmail){
-     await gmail.sendMail({...message,from:{name:'Velmurugan Finance',address:gmailUser!}});
+     await gmail.sendMail({...message,from:{name:'Velmurugan Capital',address:gmailUser!}});
     }else{
      const mail=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json','Idempotency-Key':id},body:JSON.stringify({...message,from})});
      if(!mail.ok)throw new Error('Email provider rejected the request');
