@@ -3731,7 +3731,12 @@ function BorrowerLoansView({
                 >
                   <div className="panel-head">
                     <div>
-                      <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
+                      <h2>
+                        Loan #{l.id.slice(0, 8).toUpperCase()}
+                        <span className="loan-borrowed-amount">
+                          Borrowed {money(l.original_principal)}
+                        </span>
+                      </h2>
                       <small>
                         Disbursed on {date(l.disbursed_on)} ·{' '}
                         {l.installment_months || instLedger.rows.length}
@@ -3744,8 +3749,8 @@ function BorrowerLoansView({
                   </div>
                   <div className="loan-facts">
                     <Fact
-                      label="Capital remaining"
-                      value={money(l.balance.principal)}
+                      label="Total outstanding"
+                      value={money(l.balance.total)}
                     />
                     <Fact
                       label="Overdue count"
@@ -3760,11 +3765,11 @@ function BorrowerLoansView({
                       }
                     />
                     <Fact
-                      label="Upcoming interest"
+                      label="Next due amount"
                       value={
-                        settled
+                        settled || !instLedger.nextInstallment
                           ? money(0)
-                          : money(fromPaise(instLedger.upcomingInterestEstimatePaise))
+                          : money(fromPaise(instLedger.nextInstallment.unpaidTotalPaise))
                       }
                     />
                     <Fact
@@ -3824,7 +3829,12 @@ function BorrowerLoansView({
               >
                 <div className="panel-head">
                   <div>
-                    <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
+                      <h2>
+                        Loan #{l.id.slice(0, 8).toUpperCase()}
+                        <span className="loan-borrowed-amount">
+                          Borrowed {money(l.original_principal)}
+                        </span>
+                      </h2>
                     <small>Disbursed on {date(l.disbursed_on)}</small>
                   </div>
                   <span className={'badge ' + (needsAttention && !settled ? 'warm' : '')}>
@@ -3833,8 +3843,8 @@ function BorrowerLoansView({
                 </div>
                 <div className="loan-facts">
                   <Fact
-                    label="Capital remaining"
-                    value={money(l.balance.principal)}
+                    label="Total outstanding"
+                    value={money(l.balance.total)}
                   />
                   <Fact
                     label="Posted unpaid interest"
@@ -3845,7 +3855,7 @@ function BorrowerLoansView({
                     value={String(l.monthly_rate) + '%'}
                   />
                   <Fact
-                    label="Upcoming estimate"
+                    label="Next due amount"
                     value={
                       Number(l.balance.principal) > 0
                         ? money(fromPaise(ledger.upcomingInterestEstimatePaise))

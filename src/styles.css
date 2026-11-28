@@ -1411,6 +1411,15 @@ tr:hover td {
   padding: 0 0 14px 0;
 }
 
+.loan-borrowed-amount {
+  display: inline-block;
+  margin-left: 8px;
+  color: #7dd3fc;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .loan-facts {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
