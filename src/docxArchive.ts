@@ -213,11 +213,13 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
   const clients = data.clients || [];
   const loans = data.loans || [];
   const payments = data.payments || [];
+  const installments = data.installments || [];
 
   const totalCapital = loans.reduce((acc, l) => acc + Number(l.original_principal || 0), 0);
   const totalPrincipalDue = loans.reduce((acc, l) => acc + Number(l.balance?.principal || 0), 0);
   const totalInterestDue = loans.reduce((acc, l) => acc + Number(l.balance?.interest || 0), 0);
   const totalRepaid = payments.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+  const installmentLoansCount = loans.filter(l => l.terms_code === 'installment_reducing_v1').length;
 
   const clientMap = new Map(clients.map(c => [c.id, c]));
   const loanMap = new Map(loans.map(l => [l.id, l]));
@@ -271,28 +273,60 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
       })
     )}
 
-    ${xmlPara('3. ACTIVE LOAN REGISTRY', {bold: true, size: 26, color: '0EA5E9', spaceBefore: 360, spaceAfter: 120})}
+    ${xmlPara('3. LOAN REGISTRY', {bold: true, size: 26, color: '0EA5E9', spaceBefore: 360, spaceAfter: 120})}
     ${xmlTable(
       [
         {label: 'Loan #', width: 1400},
-        {label: 'Client Name', width: 2400},
-        {label: 'Disbursed', width: 1600},
-        {label: 'Rate / Mo', width: 1400, numeric: true},
-        {label: 'Total Balance', width: 2200, numeric: true}
+        {label: 'Client Name', width: 2200},
+        {label: 'Terms', width: 1800},
+        {label: 'Disbursed', width: 1500},
+        {label: 'Total Balance', width: 2100, numeric: true}
       ],
       loans.map((l, idx) => {
         const c = clientMap.get(l.client_id);
+        const termsLabel =
+          l.terms_code === 'installment_reducing_v1'
+            ? `${l.installment_months || '—'}x Reducing (${l.monthly_rate}%)`
+            : `Monthly (${l.monthly_rate}%)`;
         return [
-          `LN-${idx + 1}`,
+          `LN-${idx + 1} (${l.id.slice(0, 6).toUpperCase()})`,
           c ? c.name : 'Unknown',
+          termsLabel,
           date(l.disbursed_on),
-          `${l.monthly_rate}%`,
           money(l.balance?.total || 0)
         ];
       })
     )}
 
-    ${xmlPara('4. PAYMENT & REPAYMENT RECEIPTS LEDGER', {bold: true, size: 26, color: '0EA5E9', spaceBefore: 360, spaceAfter: 120})}
+    ${
+      installments.length > 0
+        ? `${xmlPara(`4. FROZEN INSTALLMENT SCHEDULES (${installmentLoansCount} installment loans)`, {bold: true, size: 26, color: '0EA5E9', spaceBefore: 360, spaceAfter: 120})}
+    ${xmlTable(
+      [
+        {label: 'Loan / Inst #', width: 2000},
+        {label: 'Due Date', width: 1500},
+        {label: 'Principal Due', width: 1800, numeric: true},
+        {label: 'Interest Due', width: 1800, numeric: true},
+        {label: 'Remaining', width: 1900, numeric: true}
+      ],
+      installments.map(inst => {
+        const rem = Math.max(
+          0,
+          Number(inst.total_due) - Number(inst.principal_paid) - Number(inst.interest_paid)
+        );
+        return [
+          `${inst.loan_id.slice(0, 6).toUpperCase()} #${inst.installment_number}`,
+          date(inst.due_on),
+          money(inst.principal_due),
+          money(inst.interest_due),
+          rem === 0 ? 'PAID' : money(rem)
+        ];
+      })
+    )}`
+        : ''
+    }
+
+    ${xmlPara(`${installments.length > 0 ? '5' : '4'}. PAYMENT & REPAYMENT RECEIPTS LEDGER`, {bold: true, size: 26, color: '0EA5E9', spaceBefore: 360, spaceAfter: 120})}
     ${xmlTable(
       [
         {label: 'Receipt #', width: 1600},
@@ -314,8 +348,8 @@ export function generateDocxArchive(data: Workspace): Uint8Array {
       })
     )}
 
-    ${xmlPara('5. COMPLIANCE & TAMPER-EVIDENT RECORD CERTIFICATION', {bold: true, size: 24, color: '0EA5E9', spaceBefore: 360, spaceAfter: 80})}
-    ${xmlPara('Every payment receipt recorded in this ledger carries an immutable, tamper-evident record. Payments follow interest-first clearance according to monthly_remaining_v1 calculation policies. Database level Row-Level Security (RLS) ensures full tenant isolation and cryptographic verification.', {size: 19, color: 'A9B9CB', spaceAfter: 200})}
+    ${xmlPara(`${installments.length > 0 ? '6' : '5'}. COMPLIANCE & TAMPER-EVIDENT RECORD CERTIFICATION`, {bold: true, size: 24, color: '0EA5E9', spaceBefore: 360, spaceAfter: 80})}
+    ${xmlPara('Every payment receipt recorded in this ledger carries an immutable, tamper-evident record. Payments follow interest-first clearance according to monthly_remaining_v1 and frozen installment_reducing_v1 schedules. Database level Row-Level Security (RLS) ensures full tenant isolation and cryptographic verification.', {size: 19, color: 'A9B9CB', spaceAfter: 200})}
 
     <w:sectPr>
       <w:pgSz w:w="12240" w:h="15840"/>

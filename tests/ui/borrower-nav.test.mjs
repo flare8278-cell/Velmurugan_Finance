@@ -55,11 +55,13 @@ test('App.tsx implements borrower Home, Loans, Profile views and mobile bottom t
   assert.ok(!appCode.includes('Installment Calculations'), 'Must remove installment specification placeholder banner');
   assert.match(appCode, /Borrower identity fields, KYC document uploads.*await user specifications/, 'Must note identity verification awaits user specs under Profile');
 
-  // Active-first Loans with preserved access to closed loans & receipts + per-loan drill-down
+  // Active-first Loans with preserved access to closed loans & receipts + persisted installment support
   assert.match(appCode, /partitionAndSortBorrowerLoans\(/, 'Loans must separate and sort active loans first');
   assert.match(appCode, /Closed &amp; receipts/, 'Loans must preserve access to closed loans and paid receipts');
   assert.match(appCode, /Closed loan paid receipts/, 'Closed tab must expose paid receipts for closed loans');
   assert.match(appCode, /allocateLoanInterestCharges\(/, 'Loans must allocate real interest charges');
+  assert.match(appCode, /allocateLoanInstallments\(/, 'Loans must allocate persisted reducing-balance installments');
+  assert.match(appCode, /finance_disburse_installments/, 'Owner loan disbursement must invoke finance_disburse_installments for installment loans');
   assert.match(appCode, /getLoanPayments\(/, 'Loans detail must filter paid history per loan');
   assert.match(appCode, /Download receipt/, 'Loans and receipt modal must support downloading receipts');
 

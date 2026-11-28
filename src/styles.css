@@ -2481,6 +2481,49 @@ table, .stat strong, .amount, .money, .pill, .allocation strong, .loan-facts str
   grid-column: 1 / -1;
 }
 
+.loan-terms-toggle-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.loan-terms-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.loan-terms-toggle-block .loan-scope-bar {
+  margin-bottom: 4px;
+}
+
+.installment-preview-table {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  border-radius: 8px;
+}
+
+.installment-preview-table th,
+.installment-preview-table td {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.installment-alloc-preview-list {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(56, 189, 248, 0.2);
+}
+
+.installment-alloc-preview-list small {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
 .borrower-notice-card {
   display: flex;
   align-items: flex-start;

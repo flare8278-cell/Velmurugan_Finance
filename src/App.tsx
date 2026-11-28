@@ -27,19 +27,28 @@ import {
   ShieldIcon
 } from './icons';
 import {generateDocxArchive, downloadDocx} from './docxArchive';
+import {calculateInstallments} from './installments';
 import {
+  allocateLoanInstallments,
   allocateLoanInterestCharges,
   buildReceiptHtml,
+  followingMonthEndYmd,
   formatReceiptFilename,
   fromPaise,
   getLoanPayments,
+  isInstallmentLoan,
+  isLoanClosed,
   partitionAndSortBorrowerLoans,
-  summarizeBorrowerHome
+  previewInstallmentPaymentAllocation,
+  summarizeBorrowerHome,
+  toPaise
 } from './borrowerLedger';
 import type {
   Client,
+  InstallmentAllocation,
   InterestCharge,
   Loan,
+  LoanInstallment,
   Payment,
   Profile,
   Question,
@@ -80,6 +89,8 @@ const empty: Workspace = {
   loans: [],
   payments: [],
   charges: [],
+  installments: [],
+  installment_allocations: [],
   queries: [],
   messages: [],
   refreshed_at: '',
@@ -138,6 +149,11 @@ export default function App() {
   const [vaultKey, setVaultKey] = useState<CryptoKey | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentLoan, setPaymentLoan] = useState('');
+  const [loanTermsMode, setLoanTermsMode] = useState<'monthly_remaining_v1' | 'installment_reducing_v1'>('monthly_remaining_v1');
+  const [loanAmountDraft, setLoanAmountDraft] = useState('');
+  const [loanRateDraft, setLoanRateDraft] = useState('');
+  const [loanMonthsDraft, setLoanMonthsDraft] = useState('12');
+  const [loanDateDraft, setLoanDateDraft] = useState(() => businessDate());
   const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
   const [loansFilter, setLoansFilter] = useState<'active' | 'closed'>('active');
   const [receipt, setReceipt] = useState<Payment | null>(null);
@@ -350,7 +366,17 @@ export default function App() {
     setFormError('');
     setChosenClient(client);
     setChosenLoan(loan);
-    setPaymentLoan(loan || data.loans.find(l => Number(l.balance.total) > 0)?.id || '');
+    setLoanTermsMode('monthly_remaining_v1');
+    setLoanAmountDraft('');
+    setLoanRateDraft('');
+    setLoanMonthsDraft('12');
+    setLoanDateDraft(businessDate());
+    setPaymentLoan(
+      loan ||
+        data.loans.find(l => Number(l.balance.max_payment ?? l.balance.total) > 0)
+          ?.id ||
+        ''
+    );
     setPaymentAmount('');
     requestId.current = crypto.randomUUID();
     setModal(kind);
@@ -430,15 +456,28 @@ export default function App() {
         notify('Ledger permanently purged.');
         setPurgeInput('');
       } else if (modal === 'loan') {
-        await rpc('finance_disburse', {
-          p_request: requestId.current,
-          p_client: f.get('client'),
-          p_amount: Number(f.get('amount')),
-          p_rate: Number(f.get('rate')),
-          p_date: f.get('date'),
-          p_terms_approved: f.get('approve') === 'on'
-        });
-        notify('Loan saved to Supabase.');
+        if (loanTermsMode === 'installment_reducing_v1') {
+          await rpc('finance_disburse_installments', {
+            p_request: requestId.current,
+            p_client: f.get('client'),
+            p_amount: Number(f.get('amount')),
+            p_rate: Number(f.get('rate')),
+            p_date: f.get('date'),
+            p_months: Number(f.get('months')),
+            p_terms_approved: f.get('approve') === 'on'
+          });
+          notify('Installment loan and frozen schedule saved to Supabase.');
+        } else {
+          await rpc('finance_disburse', {
+            p_request: requestId.current,
+            p_client: f.get('client'),
+            p_amount: Number(f.get('amount')),
+            p_rate: Number(f.get('rate')),
+            p_date: f.get('date'),
+            p_terms_approved: f.get('approve') === 'on'
+          });
+          notify('Loan saved to Supabase.');
+        }
       } else if (modal === 'payment') {
         const result = await rpc<Payment>('finance_record_payment', {
           p_request: requestId.current,
@@ -625,7 +664,12 @@ export default function App() {
     const paymentLoan = loan(p.loan_id);
     const paymentClient =
       client(paymentLoan?.client_id || '') || (owner ? undefined : data.clients[0]);
-    const html = buildReceiptHtml(p, paymentLoan, paymentClient);
+    const html = buildReceiptHtml(
+      p,
+      paymentLoan,
+      paymentClient,
+      data.installment_allocations || []
+    );
     const filename = formatReceiptFilename(p);
     const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
     const url = URL.createObjectURL(blob);
@@ -648,14 +692,34 @@ export default function App() {
   };
 
   const selectedPaymentLoan = loan(paymentLoan);
-  const interestPortion = Math.min(
-    Number(paymentAmount || 0),
-    Number(selectedPaymentLoan?.balance.interest || 0)
-  );
-  const capitalPortion = Math.min(
-    Number(selectedPaymentLoan?.balance.principal || 0),
-    Math.max(0, Number(paymentAmount || 0) - interestPortion)
-  );
+  const selectedPaymentInstallments = selectedPaymentLoan
+    ? (data.installments || []).filter(i => i.loan_id === selectedPaymentLoan.id)
+    : [];
+  const selectedPaymentIsInstallment =
+    Boolean(selectedPaymentLoan && isInstallmentLoan(selectedPaymentLoan));
+  const selectedInstallmentPreview = selectedPaymentIsInstallment
+    ? previewInstallmentPaymentAllocation(selectedPaymentInstallments, paymentAmount)
+    : null;
+  const interestPortion = selectedInstallmentPreview
+    ? fromPaise(selectedInstallmentPreview.interestPaise)
+    : Math.min(
+        Number(paymentAmount || 0),
+        Number(selectedPaymentLoan?.balance.interest || 0)
+      );
+  const capitalPortion = selectedInstallmentPreview
+    ? fromPaise(selectedInstallmentPreview.principalPaise)
+    : Math.min(
+        Number(selectedPaymentLoan?.balance.principal || 0),
+        Math.max(0, Number(paymentAmount || 0) - interestPortion)
+      );
+  const selectedPaymentMax = selectedPaymentLoan
+    ? selectedPaymentIsInstallment
+      ? Number(
+          selectedPaymentLoan.balance.max_payment ??
+            fromPaise(selectedInstallmentPreview?.maxPaymentPaise || 0)
+        )
+      : Number(selectedPaymentLoan.balance.total || 0)
+    : 0;
 
   function transactionTable(payments: Payment[]) {
     return (
@@ -966,6 +1030,7 @@ export default function App() {
                     loans={data.loans}
                     charges={data.charges}
                     payments={data.payments}
+                    installments={data.installments || []}
                     businessDateValue={data.business_date || businessDate()}
                     onOpenLoans={(tab = 'active') => {
                       setSelectedLoanId(null);
@@ -1180,6 +1245,8 @@ export default function App() {
                         l => !chosenClient || l.client_id === chosenClient
                       )}
                       clients={data.clients}
+                      installments={data.installments || []}
+                      businessDateValue={data.business_date || businessDate()}
                       owner={owner}
                       onPayment={l => open('payment', l.client_id, l.id)}
                       onEditRate={l => {
@@ -1194,6 +1261,8 @@ export default function App() {
                     loans={data.loans}
                     charges={data.charges}
                     payments={data.payments}
+                    installments={data.installments || []}
+                    installmentAllocations={data.installment_allocations || []}
                     businessDateValue={data.business_date || businessDate()}
                     selectedLoanId={selectedLoanId}
                     loanFilter={loansFilter}
@@ -2191,11 +2260,42 @@ export default function App() {
                         </option>
                       ))}
                   </select>
+
+                  <div className="loan-terms-toggle-block">
+                    <span className="loan-terms-label">Repayment schedule structure</span>
+                    <div className="loan-scope-bar" role="group" aria-label="Repayment terms">
+                      <button
+                        type="button"
+                        className={
+                          'loan-scope-btn ' +
+                          (loanTermsMode === 'monthly_remaining_v1' ? 'active' : '')
+                        }
+                        aria-pressed={loanTermsMode === 'monthly_remaining_v1'}
+                        onClick={() => setLoanTermsMode('monthly_remaining_v1')}
+                      >
+                        Monthly simple interest
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          'loan-scope-btn ' +
+                          (loanTermsMode === 'installment_reducing_v1' ? 'active' : '')
+                        }
+                        aria-pressed={loanTermsMode === 'installment_reducing_v1'}
+                        onClick={() => setLoanTermsMode('installment_reducing_v1')}
+                      >
+                        Reducing-balance installments
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="fields">
                     <Field
                       label="Amount given (₹)"
                       name="amount"
                       type="number"
+                      value={loanAmountDraft}
+                      onChange={e => setLoanAmountDraft(e.target.value)}
                       required
                       min="0.01"
                       max="100000000"
@@ -2205,24 +2305,135 @@ export default function App() {
                       label="Monthly rate (%)"
                       name="rate"
                       type="number"
+                      value={loanRateDraft}
+                      onChange={e => setLoanRateDraft(e.target.value)}
                       required
                       min="0"
                       max="100"
                       step="0.0001"
                     />
                   </div>
-                  <Field
-                    label="Date given"
-                    name="date"
-                    type="date"
-                    defaultValue={businessDate()}
-                    max={businessDate()}
-                    required
-                  />
+                  <div className="fields">
+                    <Field
+                      label="Date given"
+                      name="date"
+                      type="date"
+                      value={loanDateDraft}
+                      onChange={e => setLoanDateDraft(e.target.value)}
+                      max={businessDate()}
+                      required
+                    />
+                    {loanTermsMode === 'installment_reducing_v1' && (
+                      <Field
+                        label="Installment months"
+                        name="months"
+                        type="number"
+                        value={loanMonthsDraft}
+                        onChange={e => setLoanMonthsDraft(e.target.value)}
+                        required
+                        min="1"
+                        max="360"
+                        step="1"
+                      />
+                    )}
+                  </div>
+
+                  {loanTermsMode === 'installment_reducing_v1' &&
+                    (() => {
+                      const pPaise = toPaise(loanAmountDraft);
+                      const rPct = Number(loanRateDraft || 0);
+                      const mNum = Number(loanMonthsDraft || 0);
+                      let schedule: ReturnType<typeof calculateInstallments> | null = null;
+                      let previewErr = '';
+                      if (loanAmountDraft && loanMonthsDraft) {
+                        try {
+                          schedule = calculateInstallments(pPaise, rPct, mNum);
+                        } catch (err) {
+                          previewErr = (err as Error).message;
+                        }
+                      }
+                      let dueCursor = followingMonthEndYmd(loanDateDraft);
+                      const scheduleWithDates = schedule
+                        ? schedule.map(row => {
+                            const rowDue = dueCursor;
+                            dueCursor = followingMonthEndYmd(dueCursor);
+                            return {...row, dueOn: rowDue};
+                          })
+                        : [];
+                      const totalInt = schedule
+                        ? schedule.reduce((s, r) => s + r.interest, 0)
+                        : 0;
+                      const totalPay = schedule
+                        ? schedule.reduce((s, r) => s + r.payment, 0)
+                        : 0;
+                      return (
+                        <div className="repayment-calculator" aria-live="polite">
+                          <div className="repayment-calc-head">
+                            <span>Frozen Reducing-Balance Schedule Preview</span>
+                            {schedule && schedule[0] && (
+                              <span className="pill">
+                                EMI ≈ {money(fromPaise(schedule[0].payment))}/mo
+                              </span>
+                            )}
+                          </div>
+                          {previewErr && <p className="repayment-note">{previewErr}</p>}
+                          {schedule && schedule.length > 0 && (
+                            <>
+                              <div className="repayment-breakdown">
+                                <div className="repayment-row">
+                                  <span>First Due Date</span>
+                                  <strong>
+                                    {scheduleWithDates[0]?.dueOn
+                                      ? date(scheduleWithDates[0].dueOn)
+                                      : '—'}
+                                  </strong>
+                                </div>
+                                <div className="repayment-row">
+                                  <span>Total Scheduled Interest</span>
+                                  <strong style={{color: 'var(--gold-text)'}}>
+                                    {money(fromPaise(totalInt))}
+                                  </strong>
+                                </div>
+                                <div className="repayment-row highlight">
+                                  <span>Total Scheduled Repayment</span>
+                                  <strong>{money(fromPaise(totalPay))}</strong>
+                                </div>
+                              </div>
+                              <div className="table-scroll installment-preview-table">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>#</th>
+                                      <th>Due</th>
+                                      <th>Principal</th>
+                                      <th>Interest</th>
+                                      <th>Total</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {scheduleWithDates.map(row => (
+                                      <tr key={row.number}>
+                                        <td>#{row.number}</td>
+                                        <td>{row.dueOn ? date(row.dueOn) : '—'}</td>
+                                        <td>{money(fromPaise(row.principal))}</td>
+                                        <td>{money(fromPaise(row.interest))}</td>
+                                        <td><strong>{money(fromPaise(row.payment))}</strong></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                   <label className="checkbox">
-                    <input type="checkbox" name="approve" required />I confirm monthly simple
-                    interest on remaining principal; first interest due at the next month’s end;
-                    payments clear interest first; no compounding or extra late penalty.
+                    <input type="checkbox" name="approve" required />
+                    {loanTermsMode === 'installment_reducing_v1'
+                      ? 'I confirm the frozen reducing-balance installment schedule above; payments allocate across unpaid installments clearing interest before principal.'
+                      : 'I confirm monthly simple interest on remaining principal; first interest due at the next month’s end; payments clear interest first; no compounding or extra late penalty.'}
                   </label>
                   <p className="fine">
                     A top-up creates a separate loan. For existing historical balances, use
@@ -2242,12 +2453,13 @@ export default function App() {
                   >
                     <option value="">Select a loan</option>
                     {data.loans
-                      .filter(l => Number(l.balance.total) > 0)
+                      .filter(l => Number(l.balance.max_payment ?? l.balance.total) > 0)
                       .map(l => (
                         <option key={l.id} value={l.id}>
                           {client(l.client_id)?.name} · {l.id.slice(0, 8)} ·{' '}
-                          {money(l.balance.total)} (Principal: {money(l.balance.principal)},
-                          Interest: {money(l.balance.interest)})
+                          {isInstallmentLoan(l)
+                            ? `${l.installment_months || ''}x EMI · Max ${money(l.balance.max_payment ?? l.balance.total)}`
+                            : `${money(l.balance.total)} (Principal: ${money(l.balance.principal)}, Interest: ${money(l.balance.interest)})`}
                         </option>
                       ))}
                   </select>
@@ -2260,10 +2472,7 @@ export default function App() {
                       type="number"
                       required
                       min="0.01"
-                      max={Math.min(
-                        100000000,
-                        Number(selectedPaymentLoan?.balance.total || 0)
-                      )}
+                      max={Math.min(100000000, selectedPaymentMax)}
                       step="0.01"
                       value={paymentAmount}
                       onChange={e => setPaymentAmount(e.target.value)}
@@ -2271,87 +2480,179 @@ export default function App() {
                     />
                   </label>
 
-                  {selectedPaymentLoan && (
-                    <div className="repayment-calculator" aria-live="polite">
-                      <div className="repayment-calc-head">
-                        <span>Interest-First Allocation Preview</span>
-                        <div className="repayment-quick-buttons">
-                          {Number(selectedPaymentLoan.balance.interest) > 0 && (
-                            <button
-                              type="button"
-                              className="quick-fill-btn"
-                              onClick={() =>
-                                setPaymentAmount(
-                                  String(selectedPaymentLoan.balance.interest)
-                                )
-                              }
-                            >
-                              Interest: {money(selectedPaymentLoan.balance.interest)}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="quick-fill-btn"
-                            onClick={() =>
-                              setPaymentAmount(String(selectedPaymentLoan.balance.total))
-                            }
-                          >
-                            Full Balance: {money(selectedPaymentLoan.balance.total)}
-                          </button>
-                        </div>
-                      </div>
-                      <div className="repayment-breakdown">
-                        <div className="repayment-row">
-                          <span>Outstanding Balance</span>
-                          <strong>{money(selectedPaymentLoan.balance.total)}</strong>
-                        </div>
-                        <div className="repayment-row">
-                          <small>• Accrued Interest Due</small>
-                          <span className="money">
-                            {money(selectedPaymentLoan.balance.interest)}
-                          </span>
-                        </div>
-                        <div className="repayment-row">
-                          <small>• Remaining Capital</small>
-                          <span className="money">
-                            {money(selectedPaymentLoan.balance.principal)}
-                          </span>
-                        </div>
-                        <div className="repayment-row highlight">
-                          <span>Payment Breakdown:</span>
-                          <span />
-                        </div>
-                        <div className="repayment-row">
-                          <span>1. Interest Cleared (100% first):</span>
-                          <strong style={{color: 'var(--gold-text)'}}>
-                            {money(interestPortion)}
-                          </strong>
-                        </div>
-                        <div className="repayment-row">
-                          <span>2. Capital Reduced:</span>
-                          <strong style={{color: 'var(--teal-text)'}}>
-                            {money(capitalPortion)}
-                          </strong>
-                        </div>
-                        <div className="repayment-row highlight">
-                          <span>New Remaining Principal:</span>
-                          <strong style={{color: 'var(--navy)'}}>
-                            {money(
-                              Math.max(
-                                0,
-                                Number(selectedPaymentLoan.balance.principal) -
-                                  capitalPortion
-                              )
+                  {selectedPaymentLoan &&
+                    (() => {
+                      const effectiveBizDate = data.business_date || businessDate();
+                      const instLedger = selectedPaymentIsInstallment
+                        ? allocateLoanInstallments(
+                            selectedPaymentLoan,
+                            selectedPaymentInstallments,
+                            effectiveBizDate
+                          )
+                        : null;
+                      const nextInstDueAmount = instLedger?.nextInstallment
+                        ? fromPaise(instLedger.nextInstallment.unpaidTotalPaise)
+                        : 0;
+                      const dueNowAmount = instLedger
+                        ? fromPaise(instLedger.dueNowPaise)
+                        : 0;
+                      return (
+                        <div className="repayment-calculator" aria-live="polite">
+                          <div className="repayment-calc-head">
+                            <span>
+                              {selectedPaymentIsInstallment
+                                ? 'Installment Allocation Preview'
+                                : 'Interest-First Allocation Preview'}
+                            </span>
+                            <div className="repayment-quick-buttons">
+                              {selectedPaymentIsInstallment ? (
+                                <>
+                                  {dueNowAmount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="quick-fill-btn"
+                                      onClick={() => setPaymentAmount(String(dueNowAmount))}
+                                    >
+                                      Due now: {money(dueNowAmount)}
+                                    </button>
+                                  )}
+                                  {nextInstDueAmount > 0 && (
+                                    <button
+                                      type="button"
+                                      className="quick-fill-btn"
+                                      onClick={() =>
+                                        setPaymentAmount(String(nextInstDueAmount))
+                                      }
+                                    >
+                                      Next EMI: {money(nextInstDueAmount)}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="quick-fill-btn"
+                                    onClick={() =>
+                                      setPaymentAmount(String(selectedPaymentMax))
+                                    }
+                                  >
+                                    Full Schedule: {money(selectedPaymentMax)}
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {Number(selectedPaymentLoan.balance.interest) > 0 && (
+                                    <button
+                                      type="button"
+                                      className="quick-fill-btn"
+                                      onClick={() =>
+                                        setPaymentAmount(
+                                          String(selectedPaymentLoan.balance.interest)
+                                        )
+                                      }
+                                    >
+                                      Interest: {money(selectedPaymentLoan.balance.interest)}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="quick-fill-btn"
+                                    onClick={() =>
+                                      setPaymentAmount(String(selectedPaymentLoan.balance.total))
+                                    }
+                                  >
+                                    Full Balance: {money(selectedPaymentLoan.balance.total)}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          <div className="repayment-breakdown">
+                            <div className="repayment-row">
+                              <span>
+                                {selectedPaymentIsInstallment
+                                  ? 'Full Remaining Schedule'
+                                  : 'Outstanding Balance'}
+                              </span>
+                              <strong>{money(selectedPaymentMax)}</strong>
+                            </div>
+                            <div className="repayment-row">
+                              <small>
+                                {selectedPaymentIsInstallment
+                                  ? '• Due / Overdue Interest'
+                                  : '• Accrued Interest Due'}
+                              </small>
+                              <span className="money">
+                                {money(selectedPaymentLoan.balance.interest)}
+                              </span>
+                            </div>
+                            <div className="repayment-row">
+                              <small>• Remaining Capital</small>
+                              <span className="money">
+                                {money(selectedPaymentLoan.balance.principal)}
+                              </span>
+                            </div>
+                            <div className="repayment-row highlight">
+                              <span>Payment Breakdown:</span>
+                              <span />
+                            </div>
+                            <div className="repayment-row">
+                              <span>1. Interest Cleared (first):</span>
+                              <strong style={{color: 'var(--gold-text)'}}>
+                                {money(interestPortion)}
+                              </strong>
+                            </div>
+                            <div className="repayment-row">
+                              <span>2. Capital Reduced:</span>
+                              <strong style={{color: 'var(--teal-text)'}}>
+                                {money(capitalPortion)}
+                              </strong>
+                            </div>
+                            <div className="repayment-row highlight">
+                              <span>New Remaining Principal:</span>
+                              <strong style={{color: 'var(--navy)'}}>
+                                {money(
+                                  Math.max(
+                                    0,
+                                    Number(selectedPaymentLoan.balance.principal) -
+                                      capitalPortion
+                                  )
+                                )}
+                              </strong>
+                            </div>
+                          </div>
+                          {selectedInstallmentPreview &&
+                            selectedInstallmentPreview.allocations.length > 0 && (
+                              <div className="installment-alloc-preview-list">
+                                <small>Installments covered by this payment:</small>
+                                {selectedInstallmentPreview.allocations.map(a => (
+                                  <div key={a.installmentNumber} className="repayment-row">
+                                    <span>
+                                      #{a.installmentNumber} ({date(a.dueOn)})
+                                    </span>
+                                    <span>
+                                      {money(fromPaise(a.interestPaise))} int +{' '}
+                                      {money(fromPaise(a.principalPaise))} cap
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             )}
-                          </strong>
+                          <p className="repayment-note">
+                            {selectedPaymentIsInstallment ? (
+                              <>
+                                Conforms to <code>installment_reducing_v1</code>. Payments
+                                allocate chronologically across unpaid installments, clearing
+                                interest before principal on each installment.
+                              </>
+                            ) : (
+                              <>
+                                Conforms to <code>monthly_remaining_v1</code>. Every payment clears
+                                accrued interest before reducing outstanding principal.
+                              </>
+                            )}
+                          </p>
                         </div>
-                      </div>
-                      <p className="repayment-note">
-                        Conforms to <code>monthly_remaining_v1</code>. Every payment clears
-                        accrued interest before reducing outstanding principal.
-                      </p>
-                    </div>
-                  )}
+                      );
+                    })()}
 
                   <div className="fields">
                     <label htmlFor="payment-modal-method-select">
@@ -2468,6 +2769,21 @@ export default function App() {
               <dd>
                 {receipt.method} · {receipt.reference || '—'}
               </dd>
+              {(data.installment_allocations || []).some(a => a.payment_id === receipt.id) && (
+                <>
+                  <dt>Installments</dt>
+                  <dd>
+                    {(data.installment_allocations || [])
+                      .filter(a => a.payment_id === receipt.id)
+                      .sort((a, b) => a.installment_number - b.installment_number)
+                      .map(
+                        a =>
+                          `#${a.installment_number} (${money(a.interest_paid)} int + ${money(a.principal_paid)} cap)`
+                      )
+                      .join(', ')}
+                  </dd>
+                </>
+              )}
             </dl>
             <div className="receipt-modal-actions">
               <button
@@ -2684,88 +3000,140 @@ function ClientTable({
 function LoanCards({
   loans,
   clients,
+  installments = [],
+  businessDateValue,
   owner,
   onPayment,
   onEditRate
 }: {
   loans: Loan[];
   clients: Client[];
+  installments?: LoanInstallment[];
+  businessDateValue?: string;
   owner: boolean;
   onPayment: (l: Loan) => void;
   onEditRate?: (l: Loan) => void;
 }) {
+  const effectiveDate = businessDateValue || businessDate();
   return (
     <div className="loan-grid">
-      {loans.map(l => (
-        <article className="loan-card" key={l.id}>
-          <div className="panel-head">
-            <div>
-              <h2>{clients.find(c => c.id === l.client_id)?.name}</h2>
-              <small>Loan {l.id.slice(0, 8).toUpperCase()}</small>
+      {loans.map(l => {
+        const installmentMode = isInstallmentLoan(l);
+        const instLedger = installmentMode
+          ? allocateLoanInstallments(l, installments, effectiveDate)
+          : null;
+        const settled = isLoanClosed(l);
+        const hasAttention = installmentMode
+          ? Boolean(instLedger && (instLedger.overdueCount > 0 || instLedger.dueTodayCount > 0 || Number(l.balance.interest) > 0))
+          : Number(l.balance.interest) > 0;
+        const badgeLabel = settled
+          ? 'Settled'
+          : instLedger && instLedger.overdueCount > 0
+          ? `${instLedger.overdueCount} overdue`
+          : instLedger && instLedger.dueTodayCount > 0
+          ? `${instLedger.dueTodayCount} due today`
+          : Number(l.balance.interest) > 0
+          ? 'Interest unpaid'
+          : installmentMode
+          ? `${l.installment_months || ''}x EMI`
+          : 'Active';
+
+        return (
+          <article className="loan-card" key={l.id}>
+            <div className="panel-head">
+              <div>
+                <h2>{clients.find(c => c.id === l.client_id)?.name}</h2>
+                <small>
+                  Loan {l.id.slice(0, 8).toUpperCase()}
+                  {installmentMode && l.installment_months
+                    ? ` · ${l.installment_months}x reducing EMI`
+                    : ''}
+                </small>
+              </div>
+              <span className={'badge ' + (hasAttention && !settled ? 'warm' : '')}>
+                {badgeLabel}
+              </span>
             </div>
-            <span
-              className={
-                'badge ' + (Number(l.balance.interest) > 0 ? 'warm' : '')
-              }
-            >
-              {Number(l.balance.total) === 0
-                ? 'Settled'
-                : Number(l.balance.interest) > 0
-                ? 'Interest unpaid'
-                : 'Active'}
-            </span>
-          </div>
-          <div className="loan-facts">
-            <Fact label="Originally borrowed" value={money(l.original_principal)} />
-            <Fact label="Monthly rate" value={String(l.monthly_rate) + '%'} />
-            <Fact label="Capital remaining" value={money(l.balance.principal)} />
-            <Fact label="Unpaid interest" value={money(l.balance.interest)} />
-            <Fact label="Total outstanding" value={money(l.balance.total)} />
-            <Fact
-              label="Next interest estimate"
-              value={money(
-                (Number(l.balance.principal) * Number(l.monthly_rate)) / 100
-              )}
-            />
-            <Fact label="Borrowed on" value={date(l.disbursed_on)} />
-            <Fact label="First interest due" value={date(l.first_due_on)} />
-            <Fact
-              label="Next interest due"
-              value={
-                Number(l.balance.principal) > 0
-                  ? date(l.next_due_on)
-                  : 'No further capital interest'
-              }
-            />
-          </div>
-          <p className="fine">
-            Posted interest is due separately from capital. No principal instalment
-            schedule or extra overdue penalty has been added.
-          </p>
-          {owner && (
-            <div style={{display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap'}}>
-              {Number(l.balance.total) > 0 && (
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => onPayment(l)}
-                >
-                  <GetMoneyIcon size={15} /> Record repayment
-                </button>
-              )}
-              {onEditRate && (
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => onEditRate(l)}
-                >
-                  <RefreshIcon size={14} /> Change rate
-                </button>
+            <div className="loan-facts">
+              <Fact label="Originally borrowed" value={money(l.original_principal)} />
+              <Fact label="Monthly rate" value={String(l.monthly_rate) + '%'} />
+              <Fact label="Capital remaining" value={money(l.balance.principal)} />
+              <Fact
+                label={installmentMode ? 'Due unpaid interest' : 'Unpaid interest'}
+                value={money(l.balance.interest)}
+              />
+              <Fact label="Total outstanding" value={money(l.balance.total)} />
+              {installmentMode && instLedger ? (
+                <>
+                  <Fact
+                    label="Overdue installments"
+                    value={String(instLedger.overdueCount)}
+                  />
+                  <Fact label="Borrowed on" value={date(l.disbursed_on)} />
+                  <Fact
+                    label="Installments left"
+                    value={`${instLedger.remainingCount} / ${l.installment_months || instLedger.rows.length}`}
+                  />
+                  <Fact
+                    label="Next installment due"
+                    value={
+                      instLedger.nextInstallment
+                        ? `${date(instLedger.nextInstallment.installment.due_on)} (${money(fromPaise(instLedger.nextInstallment.unpaidTotalPaise))})`
+                        : 'All installments paid'
+                    }
+                  />
+                </>
+              ) : (
+                <>
+                  <Fact
+                    label="Next interest estimate"
+                    value={money(
+                      (Number(l.balance.principal) * Number(l.monthly_rate)) / 100
+                    )}
+                  />
+                  <Fact label="Borrowed on" value={date(l.disbursed_on)} />
+                  <Fact label="First interest due" value={date(l.first_due_on)} />
+                  <Fact
+                    label="Next interest due"
+                    value={
+                      Number(l.balance.principal) > 0
+                        ? date(l.next_due_on)
+                        : 'No further capital interest'
+                    }
+                  />
+                </>
               )}
             </div>
-          )}
-        </article>
-      ))}
+            <p className="fine">
+              {installmentMode
+                ? 'Frozen reducing-balance installment schedule: payments allocate across installments chronologically, clearing interest before principal.'
+                : 'Posted interest is due separately from capital. No principal instalment schedule or extra overdue penalty has been added.'}
+            </p>
+            {owner && (
+              <div style={{display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap'}}>
+                {!settled && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => onPayment(l)}
+                  >
+                    <GetMoneyIcon size={15} /> Record repayment
+                  </button>
+                )}
+                {onEditRate && !installmentMode && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => onEditRate(l)}
+                  >
+                    <RefreshIcon size={14} /> Change rate
+                  </button>
+                )}
+              </div>
+            )}
+          </article>
+        );
+      })}
       {!loans.length && <p className="empty">No loans match this account.</p>}
     </div>
   );
@@ -3008,6 +3376,7 @@ function BorrowerHomeView({
   loans,
   charges,
   payments,
+  installments,
   businessDateValue,
   onOpenLoans
 }: {
@@ -3015,17 +3384,37 @@ function BorrowerHomeView({
   loans: Loan[];
   charges: InterestCharge[];
   payments: Payment[];
+  installments: LoanInstallment[];
   businessDateValue: string;
   onOpenLoans: (tab?: 'active' | 'closed') => void;
 }) {
-  const summary = summarizeBorrowerHome(loans, charges, payments, businessDateValue);
+  const summary = summarizeBorrowerHome(
+    loans,
+    charges,
+    payments,
+    businessDateValue,
+    installments
+  );
   const monthText = monthLabel(summary.currentMonthKey);
 
+  const overdueBreakdownParts: string[] = [];
+  if (summary.overdueInstallmentCount > 0) {
+    overdueBreakdownParts.push(
+      `${summary.overdueInstallmentCount} ${summary.overdueInstallmentCount === 1 ? 'installment' : 'installments'}`
+    );
+  }
+  if (summary.overdueChargeCount > 0) {
+    overdueBreakdownParts.push(
+      `${summary.overdueChargeCount} monthly ${summary.overdueChargeCount === 1 ? 'charge' : 'charges'}`
+    );
+  }
+  const overdueBreakdownText = overdueBreakdownParts.join(' · ');
+
   const interestHint =
-    summary.overdueChargeCount > 0
-      ? `${summary.overdueChargeCount} overdue · ${summary.unpaidChargeCount} open posted`
-      : summary.dueTodayChargeCount > 0
-      ? `${summary.dueTodayChargeCount} due today · ${summary.unpaidChargeCount} open posted`
+    summary.overdueCount > 0
+      ? `${summary.overdueCount} overdue (${overdueBreakdownText})`
+      : summary.dueTodayCount > 0
+      ? `${summary.dueTodayCount} due today · ${money(summary.unpaidInterest)} open`
       : summary.unpaidChargeCount > 0
       ? `${summary.unpaidChargeCount} open posted ${summary.unpaidChargeCount === 1 ? 'charge' : 'charges'}`
       : 'No unpaid posted charges';
@@ -3063,7 +3452,7 @@ function BorrowerHomeView({
     statusMeta = `${monthText} · Paid in full`;
     statusHeadline = `${money(summary.currentMonthPaidAmount)} posted for ${monthText} paid in full`;
     statusBody =
-      `All posted monthly interest through ${monthText} is cleared.` +
+      `All due charges through ${monthText} are cleared.` +
       (summary.upcomingInterestEstimate > 0 && summary.earliestNextDueOn
         ? ` Next pre-posting monthly estimate of ${money(summary.upcomingInterestEstimate)} is expected on ${date(summary.earliestNextDueOn)}.`
         : '');
@@ -3072,13 +3461,13 @@ function BorrowerHomeView({
     statusMeta = `${monthText} · Not yet posted`;
     statusHeadline = `No posted interest due yet · Upcoming estimate ${money(summary.upcomingInterestEstimate)}`;
     statusBody =
-      `All prior posted charges are cleared. Current-cycle monthly interest has not been posted yet and is estimated at ${money(summary.upcomingInterestEstimate)} on ${summary.earliestNextDueOn ? date(summary.earliestNextDueOn) : 'month-end'}.`;
+      `All prior charges are cleared. Your next scheduled charge is pre-posting (not yet due) with upcoming interest estimated at ${money(summary.upcomingInterestEstimate)} on ${summary.earliestNextDueOn ? date(summary.earliestNextDueOn) : 'month-end'}.`;
   } else if (summary.statusKind === 'cleared_mixed') {
     statusBadge = 'Posted interest cleared · Paid & upcoming';
     statusMeta = `${monthText} · ${summary.paidCurrentMonthLoansCount} paid · ${summary.prePostingLoansCount} upcoming`;
-    statusHeadline = `No unpaid posted interest · ${summary.paidCurrentMonthLoansCount} paid, ${summary.prePostingLoansCount} pre-posting`;
+    statusHeadline = `No unpaid due interest · ${summary.paidCurrentMonthLoansCount} paid, ${summary.prePostingLoansCount} upcoming`;
     statusBody =
-      `Posted monthly interest of ${money(summary.currentMonthPaidAmount)} for ${monthText} is paid in full on ${summary.paidCurrentMonthLoansCount} ${summary.paidCurrentMonthLoansCount === 1 ? 'loan' : 'loans'}; active pre-posting monthly interest is estimated at ${money(summary.upcomingInterestEstimate)} total.`;
+      `${monthText} payments of ${money(summary.currentMonthPaidAmount)} are cleared on ${summary.paidCurrentMonthLoansCount} ${summary.paidCurrentMonthLoansCount === 1 ? 'loan' : 'loans'}; upcoming pre-posting interest across active loans is estimated at ${money(summary.upcomingInterestEstimate)}.`;
   } else if (summary.statusKind === 'settled') {
     statusBadge = summary.totalLoansCount > 0 ? 'All loans settled' : 'No active loans';
     statusMeta = `As of ${date(businessDateValue)}`;
@@ -3091,16 +3480,19 @@ function BorrowerHomeView({
         ? 'Closed loan ledgers and paid receipts remain available under Loans.'
         : 'Active loans and monthly interest status will appear here once disbursed.';
   } else if (summary.statusKind === 'overdue') {
-    statusBadge = 'Overdue posted interest';
-    statusMeta = `${summary.overdueChargeCount} overdue · ${summary.unpaidChargeCount} open posted`;
-    statusHeadline = `${money(summary.unpaidInterest)} unpaid posted interest`;
+    statusBadge = `${summary.overdueCount} overdue (${overdueBreakdownText})`;
+    statusMeta = `${money(summary.overdueAmount)} overdue · As of ${date(businessDateValue)}`;
+    statusHeadline =
+      summary.overdueInstallmentCount > 0 && summary.overdueChargeCount === 0
+        ? `${summary.overdueInstallmentCount} overdue ${summary.overdueInstallmentCount === 1 ? 'installment' : 'installments'} (${money(summary.overdueAmount)})`
+        : `${money(summary.overdueAmount)} overdue across ${summary.overdueCount} ${summary.overdueCount === 1 ? 'item' : 'items'}`;
     statusBody =
-      'Posted monthly interest charges remain unpaid. Repayments clear unpaid posted interest before reducing remaining principal.';
+      'Unpaid past-due charges or installments are recorded on your account. Repayments clear interest before reducing principal.';
   } else if (summary.statusKind === 'due_today') {
-    statusBadge = 'Posted interest due today';
-    statusMeta = `${summary.dueTodayChargeCount} due today · ${summary.unpaidChargeCount} open posted`;
-    statusHeadline = `${money(summary.unpaidInterest)} posted interest due today`;
-    statusBody = `Posted monthly interest is due today (${date(businessDateValue)}). Repayments clear posted interest before reducing principal.`;
+    statusBadge = `${summary.dueTodayCount} due today`;
+    statusMeta = `${date(businessDateValue)} · Open today`;
+    statusHeadline = `${money(summary.unpaidInterest)} due today`;
+    statusBody = `Charges or installments are due today (${date(businessDateValue)}). Repayments clear interest before reducing principal.`;
   } else {
     statusBadge = 'Unpaid posted interest';
     statusMeta = `${summary.unpaidChargeCount} open posted`;
@@ -3153,7 +3545,7 @@ function BorrowerHomeView({
           value={money(summary.totalBalance)}
           hint={
             summary.activeLoansCount > 0
-              ? `Principal ${money(summary.remainingPrincipal)} + posted interest ${money(summary.unpaidInterest)}`
+              ? `Principal ${money(summary.remainingPrincipal)} + due interest ${money(summary.unpaidInterest)}`
               : 'No outstanding balance'
           }
           feature
@@ -3175,7 +3567,13 @@ function BorrowerHomeView({
           label="Active loans"
           value={String(summary.activeLoansCount)}
           hint={activeLoansHint}
-          onClick={() => onOpenLoans(summary.activeLoansCount === 0 && summary.closedLoansCount > 0 ? 'closed' : 'active')}
+          onClick={() =>
+            onOpenLoans(
+              summary.activeLoansCount === 0 && summary.closedLoansCount > 0
+                ? 'closed'
+                : 'active'
+            )
+          }
         />
       </div>
     </>
@@ -3186,6 +3584,8 @@ function BorrowerLoansView({
   loans,
   charges,
   payments,
+  installments,
+  installmentAllocations,
   businessDateValue,
   selectedLoanId,
   loanFilter,
@@ -3197,6 +3597,8 @@ function BorrowerLoansView({
   loans: Loan[];
   charges: InterestCharge[];
   payments: Payment[];
+  installments: LoanInstallment[];
+  installmentAllocations: InstallmentAllocation[];
   businessDateValue: string;
   selectedLoanId: string | null;
   loanFilter: 'active' | 'closed';
@@ -3214,7 +3616,8 @@ function BorrowerLoansView({
       loans,
       charges,
       payments,
-      businessDateValue
+      businessDateValue,
+      installments
     );
     const showingClosed = loanFilter === 'closed' && closedLoans.length > 0;
     const visibleLoans = showingClosed ? closedLoans : activeLoans;
@@ -3259,6 +3662,93 @@ function BorrowerLoansView({
 
         <div className="loan-grid">
           {visibleLoans.map(l => {
+            const installmentMode = isInstallmentLoan(l);
+            const loanPayments = getLoanPayments(l.id, payments);
+            const settled = isLoanClosed(l);
+
+            if (installmentMode) {
+              const instLedger = allocateLoanInstallments(
+                l,
+                installments,
+                businessDateValue
+              );
+              const needsAttention =
+                instLedger.overdueCount > 0 ||
+                instLedger.dueTodayCount > 0 ||
+                Number(l.balance.interest) > 0;
+              const badgeText = settled
+                ? 'Settled'
+                : instLedger.overdueCount > 0
+                ? `${instLedger.overdueCount} overdue`
+                : instLedger.dueTodayCount > 0
+                ? `${instLedger.dueTodayCount} due today`
+                : `${instLedger.remainingCount}/${l.installment_months || instLedger.rows.length} left`;
+
+              return (
+                <article
+                  className="loan-card loan-card-action"
+                  key={l.id}
+                  onClick={() => onSelectLoan(l.id)}
+                >
+                  <div className="panel-head">
+                    <div>
+                      <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
+                      <small>
+                        Disbursed on {date(l.disbursed_on)} ·{' '}
+                        {l.installment_months || instLedger.rows.length}x reducing EMI
+                      </small>
+                    </div>
+                    <span className={'badge ' + (needsAttention && !settled ? 'warm' : '')}>
+                      {badgeText}
+                    </span>
+                  </div>
+                  <div className="loan-facts">
+                    <Fact
+                      label="Capital remaining"
+                      value={money(l.balance.principal)}
+                    />
+                    <Fact
+                      label="Overdue count"
+                      value={String(instLedger.overdueCount)}
+                    />
+                    <Fact
+                      label="Monthly rate"
+                      value={`${l.monthly_rate}% · ${l.installment_months || instLedger.rows.length}m`}
+                    />
+                    <Fact
+                      label="Upcoming interest"
+                      value={
+                        settled
+                          ? money(0)
+                          : money(fromPaise(instLedger.upcomingInterestEstimatePaise))
+                      }
+                    />
+                    <Fact
+                      label="Next due date"
+                      value={
+                        instLedger.nextInstallment
+                          ? date(instLedger.nextInstallment.installment.due_on)
+                          : 'Settled'
+                      }
+                    />
+                    <Fact label="Paid receipts" value={String(loanPayments.length)} />
+                  </div>
+                  <div className="loan-card-footer">
+                    <button
+                      type="button"
+                      className="button primary loan-open-btn"
+                      onClick={e => {
+                        e.stopPropagation();
+                        onSelectLoan(l.id);
+                      }}
+                    >
+                      Open loan details <ChevronRightIcon size={14} />
+                    </button>
+                  </div>
+                </article>
+              );
+            }
+
             const ledger = allocateLoanInterestCharges(
               l,
               charges,
@@ -3266,15 +3756,13 @@ function BorrowerLoansView({
               businessDateValue
             );
             const cm = ledger.currentMonthStatus;
-            const loanPayments = getLoanPayments(l.id, payments);
-            const isSettled = Number(l.balance.total) === 0;
             const needsAttention =
               cm.state === 'overdue' ||
               cm.state === 'due_today' ||
               cm.state === 'partial' ||
               cm.priorUnpaidPaise > 0 ||
               Number(l.balance.interest) > 0;
-            const badgeText = isSettled
+            const badgeText = settled
               ? 'Settled'
               : cm.hasPostedCharge && cm.unpaidPaise > 0
               ? cm.label
@@ -3295,7 +3783,7 @@ function BorrowerLoansView({
                     <h2>Loan #{l.id.slice(0, 8).toUpperCase()}</h2>
                     <small>Disbursed on {date(l.disbursed_on)}</small>
                   </div>
-                  <span className={'badge ' + (needsAttention && !isSettled ? 'warm' : '')}>
+                  <span className={'badge ' + (needsAttention && !settled ? 'warm' : '')}>
                     {badgeText}
                   </span>
                 </div>
@@ -3320,14 +3808,8 @@ function BorrowerLoansView({
                         : money(0)
                     }
                   />
-                  <Fact
-                    label="Current month"
-                    value={cm.label}
-                  />
-                  <Fact
-                    label="Paid receipts"
-                    value={String(loanPayments.length)}
-                  />
+                  <Fact label="Current month" value={cm.label} />
+                  <Fact label="Paid receipts" value={String(loanPayments.length)} />
                 </div>
                 <div className="loan-card-footer">
                   <button
@@ -3438,6 +3920,245 @@ function BorrowerLoansView({
     );
   }
 
+  const loanPayments = getLoanPayments(activeLoan.id, payments);
+
+  if (isInstallmentLoan(activeLoan)) {
+    const instLedger = allocateLoanInstallments(
+      activeLoan,
+      installments,
+      businessDateValue
+    );
+    const cm = instLedger.currentMonthStatus;
+    const monthText = monthLabel(cm.monthKey);
+    const statusTone =
+      instLedger.overdueCount > 0 || cm.state === 'overdue' || cm.label.includes('Overdue')
+        ? 'overdue'
+        : instLedger.dueTodayCount > 0 || cm.state === 'due_today' || cm.state === 'partial'
+        ? 'warm'
+        : isLoanClosed(activeLoan) || cm.state === 'paid'
+        ? 'paid'
+        : 'neutral';
+    const nextInst = instLedger.nextInstallment;
+
+    return (
+      <>
+        <div className="borrower-back-bar">
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => onSelectLoan(null)}
+          >
+            ← Back to loans
+          </button>
+        </div>
+
+        <PageIntro
+          eyebrow={'LOAN #' + activeLoan.id.slice(0, 8).toUpperCase()}
+          title="Installment schedule & paid history."
+          subtitle={`Disbursed on ${date(activeLoan.disbursed_on)} · ${activeLoan.installment_months || instLedger.rows.length}x reducing EMI at ${activeLoan.monthly_rate}%/month`}
+        />
+
+        <section className={'borrower-month-status-card status-' + statusTone}>
+          <div className="borrower-hero-top">
+            <span
+              className={
+                'borrower-charge-badge ' +
+                (instLedger.overdueCount > 0
+                  ? 'overdue'
+                  : instLedger.dueTodayCount > 0
+                  ? 'warm'
+                  : statusTone === 'paid'
+                  ? 'paid'
+                  : 'neutral')
+              }
+            >
+              {instLedger.overdueCount > 0
+                ? `${instLedger.overdueCount} overdue`
+                : cm.label}
+            </span>
+            <span className="borrower-hero-counter">
+              {instLedger.paidCount} of {instLedger.rows.length} paid · As of {date(businessDateValue)}
+            </span>
+          </div>
+
+          <div className="borrower-detail-metrics">
+            <div>
+              <small>Overdue installments</small>
+              <strong>
+                {instLedger.overdueCount > 0
+                  ? `${instLedger.overdueCount} (${money(fromPaise(instLedger.overduePaise))})`
+                  : '0'}
+              </strong>
+            </div>
+            <div>
+              <small>Next installment due</small>
+              <strong>
+                {nextInst
+                  ? money(fromPaise(nextInst.unpaidTotalPaise))
+                  : money(0)}
+              </strong>
+            </div>
+            <div>
+              <small>Upcoming interest ({monthText})</small>
+              <strong>
+                {money(fromPaise(instLedger.upcomingInterestEstimatePaise))}
+              </strong>
+            </div>
+            <div>
+              <small>Next due date</small>
+              <strong>
+                {nextInst ? date(nextInst.installment.due_on) : 'Settled'}
+              </strong>
+            </div>
+          </div>
+
+          <div className="loan-facts borrower-detail-facts">
+            <Fact label="Originally borrowed" value={money(activeLoan.original_principal)} />
+            <Fact label="Capital remaining" value={money(activeLoan.balance.principal)} />
+            <Fact label="Due unpaid interest" value={money(activeLoan.balance.interest)} />
+            <Fact
+              label="Total schedule remaining"
+              value={money(fromPaise(instLedger.maxPaymentPaise))}
+            />
+            <Fact label="First due date" value={date(activeLoan.first_due_on)} />
+            <Fact
+              label="Term"
+              value={`${activeLoan.installment_months || instLedger.rows.length} months`}
+            />
+          </div>
+
+          <div className="borrower-allocation-note">
+            <strong>Terms ({activeLoan.terms_code || 'installment_reducing_v1'}):</strong>
+            <span>
+              {' '}Frozen reducing-balance schedule: payments allocate chronologically across installments, clearing interest before principal on each installment.
+            </span>
+          </div>
+        </section>
+
+        <section className="panel" style={{marginTop: 20}}>
+          <div className="panel-head">
+            <div>
+              <h2>Installment schedule</h2>
+              <small>
+                {instLedger.paidCount} paid · {instLedger.remainingCount} remaining
+              </small>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Due date</th>
+                  <th>Principal</th>
+                  <th>Interest</th>
+                  <th>Total due</th>
+                  <th>Paid</th>
+                  <th>Remaining</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {instLedger.rows.map(row => (
+                  <tr key={row.installment.id}>
+                    <td><strong>#{row.installment.installment_number}</strong></td>
+                    <td>{date(row.installment.due_on)}</td>
+                    <td>{money(fromPaise(row.principalDuePaise))}</td>
+                    <td>{money(fromPaise(row.interestDuePaise))}</td>
+                    <td><strong>{money(fromPaise(row.totalDuePaise))}</strong></td>
+                    <td>{money(fromPaise(row.totalPaidPaise))}</td>
+                    <td>{money(fromPaise(row.unpaidTotalPaise))}</td>
+                    <td>
+                      <span className={'borrower-charge-badge ' + chargeBadgeTone(row.status)}>
+                        {row.statusLabel}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!instLedger.rows.length && (
+              <p className="empty">No installment schedule rows found for this loan.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="panel" style={{marginTop: 20}}>
+          <div className="panel-head">
+            <div>
+              <h2>Paid history</h2>
+              <small>
+                {loanPayments.length}{' '}
+                {loanPayments.length === 1 ? 'receipt' : 'receipts'} for this loan
+              </small>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Receipt / Date</th>
+                  <th>Amount</th>
+                  <th>Interest cleared</th>
+                  <th>Capital reduced</th>
+                  <th>Installments / Reference</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {loanPayments.map(p => {
+                  const allocs = installmentAllocations
+                    .filter(a => a.payment_id === p.id)
+                    .sort((a, b) => a.installment_number - b.installment_number);
+                  const allocSummary = allocs.length
+                    ? allocs.map(a => `#${a.installment_number}`).join(', ')
+                    : '';
+                  return (
+                    <tr key={p.id}>
+                      <td>
+                        <strong>#{p.id.slice(0, 8).toUpperCase()}</strong>
+                        <small>{date(p.paid_on)}</small>
+                        <CopyButton text={p.id} label="ID" />
+                      </td>
+                      <td><strong>{money(p.amount)}</strong></td>
+                      <td>{money(p.interest_paid)}</td>
+                      <td>{money(p.principal_paid)}</td>
+                      <td>
+                        {allocSummary ? `${allocSummary} · ` : ''}
+                        {p.method} · {p.reference || '—'}
+                      </td>
+                      <td>
+                        <div className="receipt-row-actions">
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => onReceipt(p)}
+                          >
+                            <ReceiptIcon size={13} /> View
+                          </button>
+                          <button
+                            type="button"
+                            className="button secondary small-btn"
+                            onClick={() => onDownloadReceipt(p)}
+                          >
+                            Download receipt
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!loanPayments.length && (
+              <p className="empty">No payments recorded for this loan yet.</p>
+            )}
+          </div>
+        </section>
+      </>
+    );
+  }
+
   const ledger = allocateLoanInterestCharges(
     activeLoan,
     charges,
@@ -3445,7 +4166,6 @@ function BorrowerLoansView({
     businessDateValue
   );
   const cm = ledger.currentMonthStatus;
-  const loanPayments = getLoanPayments(activeLoan.id, payments);
   const monthText = monthLabel(cm.monthKey);
   const statusTone =
     cm.state === 'overdue' || cm.label.includes('Overdue')

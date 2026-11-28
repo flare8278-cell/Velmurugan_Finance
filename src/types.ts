@@ -43,11 +43,44 @@ export type Loan = {
   first_due_on: string;
   next_due_on: string;
   terms_code?: string;
+  installment_months?: number | null;
   balance: {
     principal: number;
     interest: number;
     total: number;
+    scheduled_interest?: number;
+    max_payment?: number;
+    due_principal?: number;
+    due_total?: number;
+    overdue_count?: number;
+    due_today_count?: number;
   };
+};
+
+export type LoanInstallment = {
+  id: string;
+  loan_id: string;
+  installment_number: number;
+  due_on: string;
+  principal_due: number;
+  interest_due: number;
+  total_due: number;
+  remaining_principal: number;
+  principal_paid: number;
+  interest_paid: number;
+  paid_on: string | null;
+  created_at?: string;
+};
+
+export type InstallmentAllocation = {
+  id: string;
+  payment_id: string;
+  loan_id: string;
+  installment_id: string;
+  installment_number: number;
+  interest_paid: number;
+  principal_paid: number;
+  created_at: string;
 };
 
 export type InterestCharge = {
@@ -94,6 +127,8 @@ export type Workspace = {
   queries: Question[];
   messages: Message[];
   charges: InterestCharge[];
+  installments?: LoanInstallment[];
+  installment_allocations?: InstallmentAllocation[];
   refreshed_at: string;
   business_date: string;
 };

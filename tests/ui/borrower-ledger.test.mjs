@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  allocateLoanInstallments,
   allocateLoanInterestCharges,
   buildReceiptHtml,
   estimateMonthlyInterestPaise,
+  followingMonthEndYmd,
   formatReceiptFilename,
   fromPaise,
   getLoanPayments,
   getPersistedInstallmentSupport,
+  isInstallmentLoan,
   partitionAndSortBorrowerLoans,
+  previewInstallmentPaymentAllocation,
   summarizeBorrowerHome
 } from '../../src/borrowerLedger.ts';
 
@@ -420,4 +424,227 @@ test('getLoanPayments filters/sorts payments and buildReceiptHtml safely escapes
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'Must render escaped reference');
   assert.ok(html.includes('Arun &lt;Owner&gt;'), 'Must escape client name');
   assert.ok(html.includes('monthly_remaining_v1'), 'Must state persisted loan terms code');
+});
+
+test('followingMonthEndYmd handles month-end transitions and leap years', () => {
+  assert.equal(followingMonthEndYmd('2026-08-15'), '2026-09-30');
+  assert.equal(followingMonthEndYmd('2026-12-31'), '2027-01-31');
+  assert.equal(followingMonthEndYmd('2028-01-31'), '2028-02-29');
+  assert.equal(followingMonthEndYmd('2026-01-31'), '2026-02-28');
+});
+
+test('allocateLoanInstallments, previewInstallmentPaymentAllocation and borrower overdue count handle persisted schedules and mixed portfolios', () => {
+  const instLoan = {
+    ...baseLoan,
+    id: '44444444-4444-4444-8444-444444444444',
+    terms_code: 'installment_reducing_v1',
+    installment_months: 3,
+    monthly_rate: 2,
+    first_due_on: '2026-09-30',
+    next_due_on: '2026-10-31',
+    balance: {
+      principal: 40000,
+      interest: 400,
+      total: 40400,
+      scheduled_interest: 800,
+      max_payment: 40800
+    }
+  };
+  const monthlyLoan = {
+    ...baseLoan,
+    id: '55555555-5555-4555-8555-555555555555',
+    terms_code: 'monthly_remaining_v1',
+    next_due_on: '2026-12-31',
+    balance: {principal: 100000, interest: 2000, total: 102000}
+  };
+  const zeroRateOverdueInstLoan = {
+    ...baseLoan,
+    id: '66666666-6666-4666-8666-666666666666',
+    terms_code: 'installment_reducing_v1',
+    installment_months: 2,
+    monthly_rate: 0,
+    first_due_on: '2026-10-31',
+    next_due_on: '2026-10-31',
+    balance: {principal: 1000, interest: 0, total: 1000, max_payment: 1000}
+  };
+
+  assert.equal(isInstallmentLoan(instLoan), true);
+  assert.equal(getPersistedInstallmentSupport(instLoan).supported, true);
+
+  const installments = [
+    {
+      id: 'i-1',
+      loan_id: instLoan.id,
+      installment_number: 1,
+      due_on: '2026-09-30',
+      principal_due: 20000,
+      interest_due: 800,
+      total_due: 20800,
+      remaining_principal: 40000,
+      principal_paid: 20000,
+      interest_paid: 800,
+      paid_on: '2026-09-30'
+    },
+    {
+      id: 'i-2',
+      loan_id: instLoan.id,
+      installment_number: 2,
+      due_on: '2026-10-31',
+      principal_due: 20000,
+      interest_due: 600,
+      total_due: 20600,
+      remaining_principal: 20000,
+      principal_paid: 0,
+      interest_paid: 200,
+      paid_on: null
+    },
+    {
+      id: 'i-3',
+      loan_id: instLoan.id,
+      installment_number: 3,
+      due_on: '2026-12-31',
+      principal_due: 20000,
+      interest_due: 400,
+      total_due: 20400,
+      remaining_principal: 0,
+      principal_paid: 0,
+      interest_paid: 0,
+      paid_on: null
+    },
+    {
+      id: 'z-1',
+      loan_id: zeroRateOverdueInstLoan.id,
+      installment_number: 1,
+      due_on: '2026-10-31',
+      principal_due: 500,
+      interest_due: 0,
+      total_due: 500,
+      remaining_principal: 500,
+      principal_paid: 0,
+      interest_paid: 0,
+      paid_on: null
+    },
+    {
+      id: 'z-2',
+      loan_id: zeroRateOverdueInstLoan.id,
+      installment_number: 2,
+      due_on: '2026-11-30',
+      principal_due: 500,
+      interest_due: 0,
+      total_due: 500,
+      remaining_principal: 0,
+      principal_paid: 0,
+      interest_paid: 0,
+      paid_on: null
+    }
+  ];
+
+  const ledger = allocateLoanInstallments(instLoan, installments, '2026-11-30');
+  assert.equal(ledger.paidCount, 1);
+  assert.equal(ledger.remainingCount, 2);
+  assert.equal(ledger.overdueCount, 1);
+  assert.equal(fromPaise(ledger.overduePaise), 20400);
+  assert.equal(fromPaise(ledger.overdueInterestPaise), 400);
+  assert.equal(fromPaise(ledger.upcomingInterestEstimatePaise), 400);
+  assert.equal(fromPaise(ledger.maxPaymentPaise), 40800);
+  assert.equal(ledger.rows[1].status, 'partial_overdue');
+  assert.equal(ledger.rows[1].statusLabel, 'Partially paid · Overdue');
+
+  // Preview chronological interest-first installment allocation across #2 and #3
+  const preview = previewInstallmentPaymentAllocation(
+    installments.filter(i => i.loan_id === instLoan.id),
+    21000
+  );
+  assert.equal(fromPaise(preview.interestPaise), 800); // #2 remaining interest (400) + #3 interest (400)
+  assert.equal(fromPaise(preview.principalPaise), 20200); // #2 principal (20000) + #3 partial principal (200)
+  assert.equal(preview.allocations.length, 2);
+
+  // Mixed portfolio Home summary tracks combined borrower overdue count across monthly charges & installments
+  const charges = [
+    {id: 'mc-1', loan_id: monthlyLoan.id, due_on: '2026-10-31', principal_basis: 100000, rate: 2, amount: 2000}
+  ];
+  const summary = summarizeBorrowerHome(
+    [monthlyLoan, instLoan],
+    charges,
+    [],
+    '2026-11-30',
+    installments
+  );
+  assert.equal(summary.overdueChargeCount, 1);
+  assert.equal(summary.overdueInstallmentCount, 1);
+  assert.equal(summary.overdueCount, 2);
+  assert.equal(summary.overdueAmount, 22400);
+  assert.equal(summary.statusKind, 'overdue');
+
+  // 0% interest overdue installment triggers overdue status even when unpaidInterest === 0
+  const zeroSummary = summarizeBorrowerHome(
+    [zeroRateOverdueInstLoan],
+    [],
+    [],
+    '2026-11-30',
+    installments
+  );
+  assert.equal(zeroSummary.overdueInstallmentCount, 1);
+  assert.equal(zeroSummary.dueTodayCount, 1);
+  assert.equal(zeroSummary.statusKind, 'overdue');
+
+  // Sorting places overdue installment loans ahead of healthy monthly loans
+  const healthyMonthly = {
+    ...monthlyLoan,
+    id: '77777777-7777-4777-8777-777777777777',
+    balance: {principal: 100000, interest: 0, total: 100000}
+  };
+  const sorted = partitionAndSortBorrowerLoans(
+    [healthyMonthly, instLoan],
+    [],
+    [],
+    '2026-11-30',
+    installments
+  );
+  assert.deepEqual(
+    sorted.activeLoans.map(l => l.id),
+    [instLoan.id, healthyMonthly.id]
+  );
+
+  // Receipt HTML includes itemized installment allocations
+  const allocReceiptHtml = buildReceiptHtml(
+    {
+      id: 'pay-inst-1',
+      loan_id: instLoan.id,
+      amount: 21000,
+      interest_paid: 800,
+      principal_paid: 20200,
+      paid_on: '2026-11-30',
+      method: 'upi',
+      reference: 'EMI-2-3',
+      created_at: '2026-11-30T10:00:00Z'
+    },
+    instLoan,
+    {
+      id: instLoan.client_id,
+      customer_code: '26VMC002',
+      name: 'Ravi Kumar',
+      phone: '9876543210',
+      alternate_phone: '',
+      address: '',
+      work: '',
+      auth_user_id: null,
+      active: true,
+      created_at: '2026-08-15T00:00:00Z'
+    },
+    [
+      {
+        id: 'a1',
+        payment_id: 'pay-inst-1',
+        loan_id: instLoan.id,
+        installment_id: 'i-2',
+        installment_number: 2,
+        interest_paid: 400,
+        principal_paid: 20000,
+        created_at: '2026-11-30T10:00:00Z'
+      }
+    ]
+  );
+  assert.ok(allocReceiptHtml.includes('Installment Allocation'));
+  assert.ok(allocReceiptHtml.includes('installment_reducing_v1'));
 });
